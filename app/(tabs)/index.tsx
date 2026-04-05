@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   ActivityIndicator,
   Alert,
@@ -101,41 +102,58 @@ export default function HomeScreen() {
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [navigatingSlug, setNavigatingSlug] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(1);
 
-  const loadStores = useCallback(async () => {
+  const loadStores = useCallback(async (targetPage: number, mode: 'replace' | 'append' = 'replace') => {
     if (!ready) return;
 
     setError(null);
 
     try {
-      const response = await fetch(`${apiBaseUrl}${createStoresPath(storesQuery, page)}`);
+      const response = await fetch(`${apiBaseUrl}${createStoresPath(storesQuery, targetPage)}`);
 
       if (!response.ok) {
         throw new Error(`Could not load stores (${response.status})`);
       }
 
       const payload = (await response.json()) as StoresApiResponse;
-      setStores(payload.data ?? []);
+      const nextStores = payload.data ?? [];
+
+      setStores((current) => {
+        if (mode === 'replace') return nextStores;
+
+        const seen = new Set(current.map((item) => item.id));
+        const additions = nextStores.filter((item) => !seen.has(item.id));
+        return [...current, ...additions];
+      });
+
+      setPage(payload.meta?.pagination?.page ?? targetPage);
       setPageCount(payload.meta?.pagination?.pageCount ?? 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error while loading stores');
     } finally {
-      setLoading(false);
+      if (mode === 'replace') {
+        setLoading(false);
+      }
+
       setRefreshing(false);
+      setLoadingMore(false);
     }
-  }, [apiBaseUrl, page, ready, storesQuery]);
+  }, [apiBaseUrl, ready, storesQuery]);
 
   useEffect(() => {
     if (!ready) return;
-    loadStores();
-  }, [loadStores, ready]);
 
-  useEffect(() => {
+    setLoading(true);
+    setStores([]);
     setPage(1);
-  }, [apiBaseUrl, storesQuery]);
+    setPageCount(1);
+    loadStores(1, 'replace');
+  }, [apiBaseUrl, loadStores, ready, storesQuery]);
 
   const activeStoresCount = useMemo(
     () => stores.reduce((acc, store) => (store.active ? acc + 1 : acc), 0),
@@ -144,23 +162,39 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    loadStores();
+    loadStores(1, 'replace');
   }, [loadStores]);
 
-  const goToPreviousPage = useCallback(() => {
-    setPage((current) => Math.max(1, current - 1));
-  }, []);
+  const onEndReached = useCallback(() => {
+    if (loading || refreshing || loadingMore) return;
+    if (page >= pageCount) return;
 
-  const goToNextPage = useCallback(() => {
-    setPage((current) => Math.min(pageCount, current + 1));
-  }, [pageCount]);
+    setLoadingMore(true);
+    loadStores(page + 1, 'append');
+  }, [loadStores, loading, loadingMore, page, pageCount, refreshing]);
 
   const openStoreBySlug = useCallback(
     (slug: string) => {
-      router.push({ pathname: '/store/[slug]', params: { slug } } as never);
+      if (navigatingSlug) return;
+
+      setNavigatingSlug(slug);
+
+      setTimeout(() => {
+        router.push({ pathname: '/store/[slug]', params: { slug } } as never);
+      }, 95);
     },
-    [router]
+    [navigatingSlug, router]
   );
+
+  useEffect(() => {
+    if (!navigatingSlug) return;
+
+    const reset = setTimeout(() => {
+      setNavigatingSlug(null);
+    }, 1200);
+
+    return () => clearTimeout(reset);
+  }, [navigatingSlug]);
 
   const openUrlChoice = useCallback(
     (url: string, label: string) => {
@@ -197,21 +231,28 @@ export default function HomeScreen() {
     [linkOpenMode, router]
   );
 
-  const renderStoreCard: ListRenderItem<Store> = ({ item }) => {
+  const renderStoreCard: ListRenderItem<Store> = ({ item, index }) => {
     const tintColors = getTintColors(item.id);
+    const isLaunching = navigatingSlug === item.slug;
 
     return (
-      <Pressable
-        onPress={() => openStoreBySlug(item.slug)}
-        style={({ pressed }) => [pressed && styles.cardPressed]}>
-        <ThemedView
-          style={[
-            styles.card,
-            {
-              backgroundColor: tintColors.top,
-              borderColor: tintColors.bottom,
-            },
+      <Animated.View entering={FadeInDown.duration(320).delay(Math.min(index, 10) * 40)}>
+        <Pressable
+          onPress={() => openStoreBySlug(item.slug)}
+          disabled={!!navigatingSlug}
+          style={({ pressed }) => [
+            (pressed || isLaunching) && styles.cardPressed,
+            isLaunching && styles.cardLaunching,
           ]}>
+          <ThemedView
+            style={[
+              styles.card,
+              {
+                backgroundColor: tintColors.top,
+                borderColor: tintColors.bottom,
+              },
+              isLaunching && styles.cardLaunchingSurface,
+            ]}>
           <View style={styles.cardHeader}>
             <View style={styles.brandBlock}>
               {getLogoUrl(item.Logo) ? (
@@ -263,8 +304,9 @@ export default function HomeScreen() {
               ))}
             </View>
           ) : null}
-        </ThemedView>
-      </Pressable>
+          </ThemedView>
+        </Pressable>
+      </Animated.View>
     );
   };
 
@@ -288,12 +330,14 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+      <Animated.View
+        style={[styles.header, { paddingTop: insets.top + 16 }]}
+        entering={FadeIn.duration(360)}>
         <ThemedText type="title" style={styles.headerTitle}>
           markket stores
         </ThemedText>
         <ThemedText style={styles.headerSubtitle}>
-          Community storefronts. Sorted by latest updates. {stores.length} on this page. {activeStoresCount} live.
+          Community storefronts. Sorted by latest updates. {stores.length} loaded. {activeStoresCount} live.
         </ThemedText>
 
         {defaultStoreSlug ? (
@@ -305,7 +349,7 @@ export default function HomeScreen() {
             </ThemedText>
           </Pressable>
         ) : null}
-      </View>
+      </Animated.View>
 
       <FlatList
         data={stores}
@@ -314,6 +358,8 @@ export default function HomeScreen() {
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 34 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.4}
         ListEmptyComponent={
           <ThemedView style={styles.emptyState}>
             <ThemedText type="subtitle">No stores found</ThemedText>
@@ -321,23 +367,10 @@ export default function HomeScreen() {
           </ThemedView>
         }
         ListFooterComponent={
-          pageCount > 1 ? (
-            <View style={styles.paginationRow}>
-              <Pressable
-                style={[styles.pageButton, page === 1 && styles.pageButtonDisabled]}
-                onPress={goToPreviousPage}
-                disabled={page === 1}>
-                <ThemedText style={styles.pageButtonText}>Previous</ThemedText>
-              </Pressable>
-              <ThemedText style={styles.pageLabel}>
-                Page {page} of {pageCount}
-              </ThemedText>
-              <Pressable
-                style={[styles.pageButton, page === pageCount && styles.pageButtonDisabled]}
-                onPress={goToNextPage}
-                disabled={page === pageCount}>
-                <ThemedText style={styles.pageButtonText}>Next</ThemedText>
-              </Pressable>
+          loadingMore ? (
+            <View style={styles.loadingMoreRow}>
+              <ActivityIndicator size="small" />
+              <ThemedText style={styles.loadingMoreText}>Loading more stores...</ThemedText>
             </View>
           ) : null
         }
@@ -374,45 +407,31 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 999,
     alignSelf: 'flex-start',
-    backgroundColor: 'rgba(10, 126, 164, 0.12)',
+    backgroundColor: 'rgba(34, 211, 238, 0.2)',
     borderWidth: 1,
-    borderColor: 'rgba(10, 126, 164, 0.4)',
+    borderColor: 'rgba(34, 211, 238, 0.55)',
   },
   quickOpenText: {
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.4,
+    color: '#164E63',
   },
   listContent: {
     paddingHorizontal: 14,
     paddingBottom: 34,
     gap: 14,
   },
-  paginationRow: {
+  loadingMoreRow: {
     marginTop: 6,
     paddingHorizontal: 8,
     paddingTop: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     gap: 8,
   },
-  pageButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(10, 126, 164, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(10, 126, 164, 0.35)',
-  },
-  pageButtonDisabled: {
-    opacity: 0.45,
-  },
-  pageButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  pageLabel: {
+  loadingMoreText: {
     fontSize: 12,
     opacity: 0.7,
   },
@@ -427,7 +446,17 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardPressed: {
-    opacity: 0.83,
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
+  cardLaunching: {
+    opacity: 0.84,
+    transform: [{ scale: 0.965 }],
+  },
+  cardLaunchingSurface: {
+    borderColor: 'rgba(217, 70, 239, 0.6)',
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -502,12 +531,13 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(10, 126, 164, 0.45)',
-    backgroundColor: 'rgba(10, 126, 164, 0.1)',
+    borderColor: 'rgba(217, 70, 239, 0.55)',
+    backgroundColor: 'rgba(217, 70, 239, 0.12)',
   },
   urlChipText: {
     fontSize: 12,
     fontWeight: '600',
+    color: '#86198F',
   },
   badge: {
     borderRadius: 999,

@@ -181,7 +181,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primaryButton: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#D946EF',
   },
   primaryButtonText: {
     color: '#fff',

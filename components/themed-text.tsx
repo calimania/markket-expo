@@ -35,26 +35,31 @@ export function ThemedText({
 
 const styles = StyleSheet.create({
   default: {
+    fontFamily: 'Manrope',
     fontSize: 16,
     lineHeight: 24,
   },
   defaultSemiBold: {
+    fontFamily: 'Manrope',
     fontSize: 16,
     lineHeight: 24,
     fontWeight: '600',
   },
   title: {
+    fontFamily: 'Newsreader',
     fontSize: 32,
-    fontWeight: 'bold',
+    fontWeight: '700',
     lineHeight: 32,
   },
   subtitle: {
+    fontFamily: 'Newsreader',
     fontSize: 20,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
   link: {
+    fontFamily: 'RobotoMono',
     lineHeight: 30,
     fontSize: 16,
-    color: '#0a7ea4',
+    color: '#0891B2',
   },
 });

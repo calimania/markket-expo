@@ -1,5 +1,7 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Image } from 'expo-image';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   ActivityIndicator,
   Alert,
@@ -7,6 +9,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 
@@ -30,6 +33,22 @@ type StoreInfo = {
   Title?: string;
   Description?: string | null;
   description?: string | null;
+  Logo?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  logo?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
   URLS?: StoreUrl[];
 };
 
@@ -67,6 +86,9 @@ type CollectionResponse<T> = {
   data?: T[];
 };
 
+const MARKDOWN_TOKEN_REGEX =
+  /(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|(https?:\/\/[^\s]+))/g;
+
 function safeSlug(value: string): string {
   return value.replace(/^\/+/, '').trim();
 }
@@ -74,6 +96,89 @@ function safeSlug(value: string): string {
 function cleanText(value: string | null | undefined): string {
   if (!value) return '';
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeMarkdown(value: string | null | undefined): string {
+  if (!value) return '';
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function renderMarkdownInline(
+  value: string,
+  keyPrefix: string,
+  onLinkPress: (url: string) => void
+): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of value.matchAll(MARKDOWN_TOKEN_REGEX)) {
+    const full = match[0] ?? '';
+    const start = match.index ?? 0;
+
+    if (start > lastIndex) {
+      nodes.push(
+        <Text key={`${keyPrefix}-plain-${tokenIndex}`} style={styles.markdownInline}>
+          {value.slice(lastIndex, start)}
+        </Text>
+      );
+      tokenIndex += 1;
+    }
+
+    if (match[2] && match[3]) {
+      const label = match[2];
+      const url = match[3];
+      nodes.push(
+        <Text
+          key={`${keyPrefix}-link-${tokenIndex}`}
+          style={[styles.markdownInline, styles.markdownLink]}
+          onPress={() => onLinkPress(url)}>
+          {label}
+        </Text>
+      );
+    } else if (match[4]) {
+      nodes.push(
+        <Text key={`${keyPrefix}-bold-${tokenIndex}`} style={[styles.markdownInline, styles.markdownBold]}>
+          {match[4]}
+        </Text>
+      );
+    } else if (match[5]) {
+      nodes.push(
+        <Text key={`${keyPrefix}-code-${tokenIndex}`} style={[styles.markdownInline, styles.markdownCode]}>
+          {match[5]}
+        </Text>
+      );
+    } else if (match[6]) {
+      nodes.push(
+        <Text key={`${keyPrefix}-italic-${tokenIndex}`} style={[styles.markdownInline, styles.markdownItalic]}>
+          {match[6]}
+        </Text>
+      );
+    } else if (match[7]) {
+      const url = match[7];
+      nodes.push(
+        <Text
+          key={`${keyPrefix}-url-${tokenIndex}`}
+          style={[styles.markdownInline, styles.markdownLink]}
+          onPress={() => onLinkPress(url)}>
+          {url}
+        </Text>
+      );
+    }
+
+    tokenIndex += 1;
+    lastIndex = start + full.length;
+  }
+
+  if (lastIndex < value.length) {
+    nodes.push(
+      <Text key={`${keyPrefix}-tail-${tokenIndex}`} style={styles.markdownInline}>
+        {value.slice(lastIndex)}
+      </Text>
+    );
+  }
+
+  return nodes;
 }
 
 function flattenText(value: unknown): string {
@@ -123,6 +228,20 @@ function getUrl(item: StoreUrl): string {
   return cleanText(item.URL || item.url || '');
 }
 
+function resolveStoreLogo(store: StoreInfo | null): string {
+  return cleanText(
+    store?.logo?.formats?.medium?.url ||
+    store?.Logo?.formats?.medium?.url ||
+    store?.logo?.formats?.small?.url ||
+    store?.Logo?.formats?.small?.url ||
+    store?.logo?.formats?.thumbnail?.url ||
+    store?.Logo?.formats?.thumbnail?.url ||
+    store?.logo?.url ||
+    store?.Logo?.url ||
+    ''
+  );
+}
+
 export default function StoreScreen() {
   const router = useRouter();
   const { slug } = useLocalSearchParams<{ slug: string | string[] }>();
@@ -137,6 +256,12 @@ export default function StoreScreen() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [pages, setPages] = useState<Page[]>([]);
+
+  const openExternalUrl = useCallback((url: string) => {
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Could not open URL', url);
+    });
+  }, []);
 
   const openUrlChoice = useCallback(
     (url: string, label: string) => {
@@ -182,6 +307,34 @@ export default function StoreScreen() {
     return (await response.json()) as T;
   }, []);
 
+  const fetchStoreInfo = useCallback(async (): Promise<CollectionResponse<StoreInfo>> => {
+    const baseQueries = [
+      `${apiBaseUrl}/api/stores?filters[slug][$eq]=${encodeURIComponent(cleanSlug)}&pagination[pageSize]=1`,
+      `${apiBaseUrl}/api/stores?filters[slug]=${encodeURIComponent(cleanSlug)}&pagination[pageSize]=1`,
+      `${apiBaseUrl}/api/stores?filter[slug][$eq]=${encodeURIComponent(cleanSlug)}&pagination[pageSize]=1`,
+    ];
+
+    const attempts = baseQueries.flatMap((base) => [
+      `${base}&populate[]=URLS&populate[]=Logo`,
+      `${base}&populate[]=URLS&populate[]=logo`,
+      `${base}&populate[]=URLS&populate=*`,
+      `${base}&populate[]=URLS`,
+      base,
+    ]);
+
+    let lastError: Error | null = null;
+
+    for (const url of attempts) {
+      try {
+        return await fetchJson<CollectionResponse<StoreInfo>>(url);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('Could not load store details');
+      }
+    }
+
+    throw lastError ?? new Error('Could not load store details');
+  }, [apiBaseUrl, cleanSlug, fetchJson]);
+
   const load = useCallback(async () => {
     if (!ready || !cleanSlug) return;
 
@@ -190,9 +343,7 @@ export default function StoreScreen() {
 
     try {
       const [storeInfoResult, articlesResult, productsResult, pagesResult] = await Promise.allSettled([
-        fetchJson<CollectionResponse<StoreInfo>>(
-          `${apiBaseUrl}/api/stores?filters[slug]=${encodeURIComponent(cleanSlug)}&populate[]=URLS&pagination[pageSize]=1`
-        ),
+        fetchStoreInfo(),
         fetchJson<CollectionResponse<Article>>(
           `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
         ),
@@ -221,21 +372,64 @@ export default function StoreScreen() {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, cleanSlug, fetchJson, ready]);
+  }, [apiBaseUrl, cleanSlug, fetchJson, fetchStoreInfo, ready]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const storeTitle = useMemo(() => titleFromStore(store, cleanSlug), [store, cleanSlug]);
+  const storeLogo = useMemo(() => resolveStoreLogo(store), [store]);
   const storefrontUrl = useMemo(() => getStorefrontUrl(displayBaseUrl, cleanSlug), [displayBaseUrl, cleanSlug]);
   const storeLinks = useMemo(() => (store?.URLS ?? []).filter((item) => getUrl(item)), [store?.URLS]);
+  const storeDescriptionMarkdown = useMemo(
+    () => normalizeMarkdown(store?.description || store?.Description || ''),
+    [store]
+  );
 
   const openItemInWebView = useCallback(
     (url: string, title: string) => {
       router.push({ pathname: '/web', params: { url, title } } as never);
     },
     [router]
+  );
+
+  const openArticle = useCallback(
+    (articleSlug: string, articleTitle: string, fallbackUrl: string) => {
+      if (!articleSlug) {
+        openItemInWebView(fallbackUrl, articleTitle || 'Article');
+        return;
+      }
+
+      router.push({
+        pathname: '/article/[slug]',
+        params: {
+          slug: articleSlug,
+          store: cleanSlug,
+          title: articleTitle || 'Article',
+        },
+      } as never);
+    },
+    [cleanSlug, openItemInWebView, router]
+  );
+
+  const openPage = useCallback(
+    (pageSlug: string, pageTitle: string, fallbackUrl: string) => {
+      if (!pageSlug) {
+        openItemInWebView(fallbackUrl, pageTitle || 'Page');
+        return;
+      }
+
+      router.push({
+        pathname: '/page/[slug]',
+        params: {
+          slug: pageSlug,
+          store: cleanSlug,
+          title: pageTitle || 'Page',
+        },
+      } as never);
+    },
+    [cleanSlug, openItemInWebView, router]
   );
 
   if (!ready || loading) {
@@ -276,21 +470,60 @@ export default function StoreScreen() {
       />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.hero}>
+        <Animated.View style={styles.hero} entering={FadeInDown.duration(360)}>
+          <View style={styles.heroTopRow}>
+            {storeLogo ? (
+              <Image source={{ uri: storeLogo }} style={styles.heroLogo} contentFit="cover" transition={250} />
+            ) : (
+              <View style={styles.heroLogoFallback}>
+                <ThemedText style={styles.heroLogoFallbackText}>
+                  {storeTitle.charAt(0).toUpperCase()}
+                </ThemedText>
+              </View>
+            )}
+
+            <View style={styles.heroBadge}>
+              <ThemedText style={styles.heroBadgeText}>Native Store Hub</ThemedText>
+            </View>
+          </View>
+
           <ThemedText type="title" style={styles.heroTitle}>
             {storeTitle}
           </ThemedText>
           <ThemedText style={styles.heroSlug}>/{cleanSlug}</ThemedText>
-          <ThemedText style={styles.heroDescription}>
-            {firstSentence(cleanText(store?.description || store?.Description || 'Browse this store in a native hub with clear sections.'))}
-          </ThemedText>
+
+          {storeDescriptionMarkdown ? (
+            <View style={styles.heroMarkdown}>
+              {storeDescriptionMarkdown.split(/\n{2,}/).map((paragraph, index) => {
+                const trimmed = paragraph.trim();
+                if (!trimmed) return null;
+
+                return (
+                  <ThemedText key={`md-${index}`} style={styles.heroDescription}>
+                    {renderMarkdownInline(trimmed, `hero-${index}`, openExternalUrl)}
+                  </ThemedText>
+                );
+              })}
+            </View>
+          ) : (
+              <ThemedText style={styles.heroDescription}>
+                {firstSentence(
+                  cleanText(
+                    store?.description ||
+                    store?.Description ||
+                    'Browse this store in a native hub with clear sections.'
+                  )
+                )}
+              </ThemedText>
+          )}
+
           <Pressable style={styles.primaryButton} onPress={() => openUrlChoice(storefrontUrl, 'Storefront')}>
             <ThemedText style={styles.primaryButtonText}>Open Storefront</ThemedText>
           </Pressable>
-        </View>
+        </Animated.View>
 
         {storeLinks.length ? (
-          <View style={styles.section}>
+          <Animated.View style={styles.section} entering={FadeIn.duration(320).delay(90)}>
             <ThemedText type="defaultSemiBold">Quick Links</ThemedText>
             <View style={styles.chipsRow}>
               {storeLinks.map((item, index) => {
@@ -303,11 +536,22 @@ export default function StoreScreen() {
                 );
               })}
             </View>
-          </View>
+          </Animated.View>
         ) : null}
 
-        <View style={styles.section}>
-          <ThemedText type="defaultSemiBold">Blog</ThemedText>
+        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(130)}>
+          <View style={styles.sectionHeader}>
+            <View style={[styles.sectionMarker, styles.blogMarker]} />
+            <View style={styles.sectionTitleWrap}>
+              <ThemedText type="defaultSemiBold" style={styles.sectionTitle}>
+                Blog
+              </ThemedText>
+              <ThemedText style={styles.sectionSubtitle}>Fresh stories from this store</ThemedText>
+            </View>
+            <View style={[styles.sectionBadge, styles.blogBadge]}>
+              <ThemedText style={styles.sectionBadgeText}>new</ThemedText>
+            </View>
+          </View>
           {articles.length ? (
             articles.slice(0, 3).map((article, index) => {
               const itemSlug = cleanText(article.slug || '');
@@ -317,7 +561,7 @@ export default function StoreScreen() {
               return (
                 <Pressable
                   key={`${article.id ?? 'a'}-${index}`}
-                  onPress={() => openItemInWebView(itemUrl, itemTitle)}
+                  onPress={() => openArticle(itemSlug, itemTitle, itemUrl)}
                   style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}>
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
@@ -328,9 +572,9 @@ export default function StoreScreen() {
           ) : (
             <ThemedText style={styles.emptyText}>No blog posts published yet.</ThemedText>
           )}
-        </View>
+        </Animated.View>
 
-        <View style={styles.section}>
+        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(170)}>
           <ThemedText type="defaultSemiBold">Products</ThemedText>
           {products.length ? (
             products.slice(0, 3).map((product, index) => {
@@ -359,10 +603,21 @@ export default function StoreScreen() {
           ) : (
             <ThemedText style={styles.emptyText}>No products listed yet.</ThemedText>
           )}
-        </View>
+        </Animated.View>
 
-        <View style={styles.section}>
-          <ThemedText type="defaultSemiBold">Pages</ThemedText>
+        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(210)}>
+          <View style={styles.sectionHeader}>
+            <View style={[styles.sectionMarker, styles.pageMarker]} />
+            <View style={styles.sectionTitleWrap}>
+              <ThemedText type="defaultSemiBold" style={styles.sectionTitle}>
+                Pages
+              </ThemedText>
+              <ThemedText style={styles.sectionSubtitle}>Useful guides and static info</ThemedText>
+            </View>
+            <View style={[styles.sectionBadge, styles.pageBadge]}>
+              <ThemedText style={styles.sectionBadgeText}>guide</ThemedText>
+            </View>
+          </View>
           {pages.length ? (
             pages.slice(0, 4).map((page, index) => {
               const itemSlug = cleanText(page.slug || '');
@@ -372,7 +627,7 @@ export default function StoreScreen() {
               return (
                 <Pressable
                   key={`${page.id ?? 'g'}-${index}`}
-                  onPress={() => openItemInWebView(itemUrl, itemTitle)}
+                  onPress={() => openPage(itemSlug, itemTitle, itemUrl)}
                   style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}>
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
@@ -383,7 +638,7 @@ export default function StoreScreen() {
           ) : (
             <ThemedText style={styles.emptyText}>No standalone pages configured.</ThemedText>
           )}
-        </View>
+        </Animated.View>
       </ScrollView>
     </ThemedView>
   );
@@ -414,6 +669,50 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: 'rgba(10,126,164,0.08)',
   },
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  heroLogo: {
+    width: 68,
+    height: 68,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.75)',
+  },
+  heroLogoFallback: {
+    width: 68,
+    height: 68,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(34,211,238,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.55)',
+  },
+  heroLogoFallbackText: {
+    fontSize: 28,
+    lineHeight: 30,
+    fontWeight: '700',
+    color: '#155E75',
+  },
+  heroBadge: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(217,70,239,0.45)',
+    backgroundColor: 'rgba(217,70,239,0.12)',
+  },
+  heroBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: '#86198F',
+    textTransform: 'uppercase',
+  },
   heroTitle: {
     fontSize: 28,
     lineHeight: 31,
@@ -426,8 +725,80 @@ const styles = StyleSheet.create({
     opacity: 0.8,
     lineHeight: 20,
   },
+  heroMarkdown: {
+    gap: 8,
+  },
+  markdownInline: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  markdownBold: {
+    fontWeight: '700',
+  },
+  markdownItalic: {
+    fontStyle: 'italic',
+  },
+  markdownCode: {
+    fontFamily: 'RobotoMono',
+    backgroundColor: 'rgba(0,0,0,0.08)',
+  },
+  markdownLink: {
+    color: '#0891B2',
+    textDecorationLine: 'underline',
+  },
   section: {
     gap: 8,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  sectionMarker: {
+    width: 10,
+    height: 36,
+    borderRadius: 999,
+  },
+  blogMarker: {
+    backgroundColor: '#22D3EE',
+  },
+  pageMarker: {
+    backgroundColor: '#D946EF',
+  },
+  sectionTitleWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  sectionTitle: {
+    lineHeight: 20,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    opacity: 0.65,
+    lineHeight: 16,
+  },
+  sectionBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  blogBadge: {
+    backgroundColor: 'rgba(34,211,238,0.14)',
+    borderColor: 'rgba(34,211,238,0.4)',
+  },
+  pageBadge: {
+    backgroundColor: 'rgba(217,70,239,0.12)',
+    borderColor: 'rgba(217,70,239,0.35)',
+  },
+  sectionBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: '#4B5563',
   },
   chipsRow: {
     flexDirection: 'row',
@@ -486,7 +857,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 9,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#D946EF',
   },
   primaryButtonText: {
     color: '#fff',
@@ -508,7 +879,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#D946EF',
   },
   retryButtonText: {
     color: '#fff',

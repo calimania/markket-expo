@@ -167,7 +167,7 @@ export default function LegalPageScreen() {
         <View style={styles.centerState}>
           <ThemedText type="subtitle">Could not load {legalKind}</ThemedText>
           <ThemedText style={styles.errorText}>{error}</ThemedText>
-          <Pressable style={styles.retryButton} onPress={loadPage}>
+            <Pressable style={styles.retryButton} onPress={loadPage}>
             <ThemedText style={styles.retryButtonText}>Try again</ThemedText>
           </Pressable>
         </View>
@@ -222,7 +222,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#D946EF',
   },
   retryButtonText: {
     color: '#fff',

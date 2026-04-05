@@ -299,8 +299,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   modeButtonActive: {
-    borderColor: '#0a7ea4',
-    backgroundColor: 'rgba(10, 126, 164, 0.12)',
+    borderColor: '#D946EF',
+    backgroundColor: 'rgba(217, 70, 239, 0.12)',
   },
   modeButtonText: {
     fontSize: 13,
@@ -312,7 +312,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   primaryButton: {
-    backgroundColor: '#0a7ea4',
+    backgroundColor: '#D946EF',
   },
   primaryButtonText: {
     color: '#fff',

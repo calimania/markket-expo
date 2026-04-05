@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Markket",
+    "name": "Markkët",
     "slug": "markket",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,7 +10,14 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.dvidsilva.markket"
+      "bundleIdentifier": "com.dvidsilva.markket",
+      "associatedDomains": [
+        "applinks:markket.place",
+        "applinks:www.markket.place"
+      ],
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.dvidsilva.markket",
@@ -18,6 +25,28 @@
         "backgroundColor": "#121212",
         "foregroundImage": "./assets/images/adaptive-icon.png"
       },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "scheme": "https",
+              "host": "markket.place",
+              "pathPrefix": "/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.markket.place",
+              "pathPrefix": "/"
+            }
+          ]
+        }
+      ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
@@ -33,9 +62,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#121212",
+          "backgroundColor": "#000000",
           "dark": {
-            "backgroundColor": "#121212"
+            "backgroundColor": "#000000"
           }
         }
       ]
