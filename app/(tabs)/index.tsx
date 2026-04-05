@@ -103,7 +103,6 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [navigatingSlug, setNavigatingSlug] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(1);
@@ -174,27 +173,20 @@ export default function HomeScreen() {
   }, [loadStores, loading, loadingMore, page, pageCount, refreshing]);
 
   const openStoreBySlug = useCallback(
-    (slug: string) => {
-      if (navigatingSlug) return;
-
-      setNavigatingSlug(slug);
-
-      setTimeout(() => {
-        router.push({ pathname: '/store/[slug]', params: { slug } } as never);
-      }, 95);
+    (slug: string, preview?: Store) => {
+      router.push({
+        pathname: '/store/[slug]',
+        params: {
+          slug,
+          previewTitle: preview?.title,
+          previewDescription: preview?.Description ?? '',
+          previewLogo: getLogoUrl(preview?.Logo ?? null) ?? '',
+          previewLocale: preview?.locale ?? '',
+        },
+      } as never);
     },
-    [navigatingSlug, router]
+    [router]
   );
-
-  useEffect(() => {
-    if (!navigatingSlug) return;
-
-    const reset = setTimeout(() => {
-      setNavigatingSlug(null);
-    }, 1200);
-
-    return () => clearTimeout(reset);
-  }, [navigatingSlug]);
 
   const openUrlChoice = useCallback(
     (url: string, label: string) => {
@@ -233,17 +225,12 @@ export default function HomeScreen() {
 
   const renderStoreCard: ListRenderItem<Store> = ({ item, index }) => {
     const tintColors = getTintColors(item.id);
-    const isLaunching = navigatingSlug === item.slug;
 
     return (
       <Animated.View entering={FadeInDown.duration(320).delay(Math.min(index, 10) * 40)}>
         <Pressable
-          onPress={() => openStoreBySlug(item.slug)}
-          disabled={!!navigatingSlug}
-          style={({ pressed }) => [
-            (pressed || isLaunching) && styles.cardPressed,
-            isLaunching && styles.cardLaunching,
-          ]}>
+          onPress={() => openStoreBySlug(item.slug, item)}
+          style={({ pressed }) => [pressed && styles.cardPressed]}>
           <ThemedView
             style={[
               styles.card,
@@ -251,7 +238,6 @@ export default function HomeScreen() {
                 backgroundColor: tintColors.top,
                 borderColor: tintColors.bottom,
               },
-              isLaunching && styles.cardLaunchingSurface,
             ]}>
           <View style={styles.cardHeader}>
             <View style={styles.brandBlock}>
@@ -448,15 +434,6 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.9,
     transform: [{ scale: 0.985 }],
-  },
-  cardLaunching: {
-    opacity: 0.84,
-    transform: [{ scale: 0.965 }],
-  },
-  cardLaunchingSurface: {
-    borderColor: 'rgba(217, 70, 239, 0.6)',
-    shadowOpacity: 0.16,
-    shadowRadius: 16,
   },
   cardHeader: {
     flexDirection: 'row',

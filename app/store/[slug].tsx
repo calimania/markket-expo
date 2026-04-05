@@ -59,6 +59,22 @@ type Article = {
   Title?: string;
   Content?: unknown;
   content?: unknown;
+  cover?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  };
+  Cover?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  };
 };
 
 type Product = {
@@ -80,6 +96,26 @@ type Page = {
   content?: unknown;
   Active?: boolean;
   active?: boolean;
+  SEO?: {
+    socialImage?: {
+      url?: string;
+      formats?: {
+        medium?: { url?: string };
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    };
+  };
+  seo?: {
+    socialImage?: {
+      url?: string;
+      formats?: {
+        medium?: { url?: string };
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    };
+  };
 };
 
 type CollectionResponse<T> = {
@@ -242,17 +278,73 @@ function resolveStoreLogo(store: StoreInfo | null): string {
   );
 }
 
+function resolveArticleImage(article: Article): string {
+  return cleanText(
+    article.cover?.formats?.medium?.url ||
+    article.Cover?.formats?.medium?.url ||
+    article.cover?.formats?.small?.url ||
+    article.Cover?.formats?.small?.url ||
+    article.cover?.formats?.thumbnail?.url ||
+    article.Cover?.formats?.thumbnail?.url ||
+    article.cover?.url ||
+    article.Cover?.url ||
+    ''
+  );
+}
+
+function resolvePageImage(page: Page): string {
+  return cleanText(
+    page.seo?.socialImage?.formats?.medium?.url ||
+    page.SEO?.socialImage?.formats?.medium?.url ||
+    page.seo?.socialImage?.formats?.small?.url ||
+    page.SEO?.socialImage?.formats?.small?.url ||
+    page.seo?.socialImage?.formats?.thumbnail?.url ||
+    page.SEO?.socialImage?.formats?.thumbnail?.url ||
+    page.seo?.socialImage?.url ||
+    page.SEO?.socialImage?.url ||
+    ''
+  );
+}
+
 export default function StoreScreen() {
   const router = useRouter();
-  const { slug } = useLocalSearchParams<{ slug: string | string[] }>();
+  const { slug, previewTitle, previewDescription, previewLogo, previewLocale } =
+    useLocalSearchParams<{
+      slug: string | string[];
+      previewTitle?: string | string[];
+      previewDescription?: string | string[];
+      previewLogo?: string | string[];
+      previewLocale?: string | string[];
+    }>();
   const { apiBaseUrl, displayBaseUrl, linkOpenMode, ready } = useAppConfig();
 
   const slugValue = Array.isArray(slug) ? slug[0] : slug;
+  const previewTitleValue = Array.isArray(previewTitle) ? previewTitle[0] : previewTitle;
+  const previewDescriptionValue = Array.isArray(previewDescription)
+    ? previewDescription[0]
+    : previewDescription;
+  const previewLogoValue = Array.isArray(previewLogo) ? previewLogo[0] : previewLogo;
+  const previewLocaleValue = Array.isArray(previewLocale) ? previewLocale[0] : previewLocale;
   const cleanSlug = safeSlug(slugValue ?? '');
+  const initialStore = useMemo<StoreInfo | null>(() => {
+    if (!cleanSlug) return null;
 
-  const [loading, setLoading] = useState(true);
+    if (!previewTitleValue && !previewDescriptionValue && !previewLogoValue) {
+      return null;
+    }
+
+    return {
+      slug: cleanSlug,
+      title: cleanText(previewTitleValue || cleanSlug),
+      Description: cleanText(previewDescriptionValue || ''),
+      Logo: previewLogoValue ? { url: cleanText(previewLogoValue) } : null,
+      URLS: [],
+    };
+  }, [cleanSlug, previewDescriptionValue, previewLogoValue, previewTitleValue]);
+
+  const [loading, setLoading] = useState(!initialStore);
   const [error, setError] = useState<string | null>(null);
-  const [store, setStore] = useState<StoreInfo | null>(null);
+  const [store, setStore] = useState<StoreInfo | null>(initialStore);
   const [articles, setArticles] = useState<Article[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [pages, setPages] = useState<Page[]>([]);
@@ -345,13 +437,13 @@ export default function StoreScreen() {
       const [storeInfoResult, articlesResult, productsResult, pagesResult] = await Promise.allSettled([
         fetchStoreInfo(),
         fetchJson<CollectionResponse<Article>>(
-          `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
+          `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=Cover`
         ),
         fetchJson<CollectionResponse<Product>>(
           `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
         ),
         fetchJson<CollectionResponse<Page>>(
-          `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=5`
+          `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12&populate=*`
         ),
       ]);
 
@@ -432,7 +524,11 @@ export default function StoreScreen() {
     [cleanSlug, openItemInWebView, router]
   );
 
-  if (!ready || loading) {
+  const openBlogArchive = useCallback(() => {
+    router.push({ pathname: '/store-blog/[slug]', params: { slug: cleanSlug, title: storeTitle } } as never);
+  }, [cleanSlug, router, storeTitle]);
+
+  if (!ready || (loading && !store)) {
     return (
       <ThemedView style={styles.centerState}>
         <ActivityIndicator size="large" />
@@ -448,7 +544,7 @@ export default function StoreScreen() {
     );
   }
 
-  if (error) {
+  if (error && !store) {
     return (
       <ThemedView style={styles.centerState}>
         <ThemedText type="subtitle">Could not load store</ThemedText>
@@ -491,6 +587,9 @@ export default function StoreScreen() {
             {storeTitle}
           </ThemedText>
           <ThemedText style={styles.heroSlug}>/{cleanSlug}</ThemedText>
+          {previewLocaleValue && !store?.URLS?.length ? (
+            <ThemedText style={styles.heroMeta}>Locale {cleanText(previewLocaleValue).toUpperCase()}</ThemedText>
+          ) : null}
 
           {storeDescriptionMarkdown ? (
             <View style={styles.heroMarkdown}>
@@ -522,7 +621,21 @@ export default function StoreScreen() {
           </Pressable>
         </Animated.View>
 
-        {storeLinks.length ? (
+        {loading ? (
+          <Animated.View style={styles.loadingStage} entering={FadeIn.duration(220)}>
+            <ActivityIndicator size="small" />
+            <View style={styles.loadingStageTextWrap}>
+              <ThemedText type="defaultSemiBold" style={styles.loadingStageTitle}>
+                Loading the rest of this store...
+              </ThemedText>
+              <ThemedText style={styles.loadingStageText}>
+                Header is ready. Blog, products, pages, and links are sliding in next.
+              </ThemedText>
+            </View>
+          </Animated.View>
+        ) : null}
+
+        {!loading && storeLinks.length ? (
           <Animated.View style={styles.section} entering={FadeIn.duration(320).delay(90)}>
             <ThemedText type="defaultSemiBold">Quick Links</ThemedText>
             <View style={styles.chipsRow}>
@@ -552,23 +665,45 @@ export default function StoreScreen() {
               <ThemedText style={styles.sectionBadgeText}>new</ThemedText>
             </View>
           </View>
-          {articles.length ? (
-            articles.slice(0, 3).map((article, index) => {
+          <Pressable style={styles.seeMoreButton} onPress={openBlogArchive}>
+            <ThemedText style={styles.seeMoreText}>Keep reading</ThemedText>
+          </Pressable>
+          {loading ? (
+            <View style={styles.loadingSectionCard}>
+              <ActivityIndicator size="small" />
+              <ThemedText style={styles.loadingSectionText}>Loading blog posts...</ThemedText>
+            </View>
+          ) : articles.length ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.railContent}
+              style={styles.railScroll}>
+              {articles.slice(0, 8).map((article, index) => {
               const itemSlug = cleanText(article.slug || '');
               const itemTitle = cleanText(article.title || article.Title || 'Untitled article');
               const itemUrl = itemSlug ? joinPath(storefrontUrl, `blog/${itemSlug}`) : storefrontUrl;
+                const itemImage = resolveArticleImage(article);
 
               return (
                 <Pressable
                   key={`${article.id ?? 'a'}-${index}`}
                   onPress={() => openArticle(itemSlug, itemTitle, itemUrl)}
-                  style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}>
+                  style={({ pressed }) => [styles.railCard, pressed && styles.itemCardPressed]}>
+                  {itemImage ? (
+                    <Image source={{ uri: itemImage }} style={styles.railImage} contentFit="cover" transition={180} />
+                  ) : (
+                    <View style={[styles.railImageFallback, styles.blogMarkerSoft]}>
+                      <ThemedText style={styles.railImageFallbackText}>BLOG</ThemedText>
+                    </View>
+                  )}
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
                   <ThemedText style={styles.itemBody}>{firstSentence(flattenText(article.content ?? article.Content)) || 'No preview text yet.'}</ThemedText>
                 </Pressable>
               );
-            })
+              })}
+              </ScrollView>
           ) : (
             <ThemedText style={styles.emptyText}>No blog posts published yet.</ThemedText>
           )}
@@ -576,7 +711,12 @@ export default function StoreScreen() {
 
         <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(170)}>
           <ThemedText type="defaultSemiBold">Products</ThemedText>
-          {products.length ? (
+          {loading ? (
+            <View style={styles.loadingSectionCard}>
+              <ActivityIndicator size="small" />
+              <ThemedText style={styles.loadingSectionText}>Loading products...</ThemedText>
+            </View>
+          ) : products.length ? (
             products.slice(0, 3).map((product, index) => {
               const name = cleanText(product.name || product.Name || 'Untitled product');
               const itemSlug = cleanText(product.slug || '');
@@ -618,23 +758,42 @@ export default function StoreScreen() {
               <ThemedText style={styles.sectionBadgeText}>guide</ThemedText>
             </View>
           </View>
-          {pages.length ? (
-            pages.slice(0, 4).map((page, index) => {
+          {loading ? (
+            <View style={styles.loadingSectionCard}>
+              <ActivityIndicator size="small" />
+              <ThemedText style={styles.loadingSectionText}>Loading pages...</ThemedText>
+            </View>
+          ) : pages.length ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.railContent}
+              style={styles.railScroll}>
+              {pages.slice(0, 12).map((page, index) => {
               const itemSlug = cleanText(page.slug || '');
               const itemTitle = cleanText(page.title || page.Title || 'Untitled page');
               const itemUrl = itemSlug ? joinPath(storefrontUrl, `about/${itemSlug}`) : storefrontUrl;
+                const itemImage = resolvePageImage(page);
 
               return (
                 <Pressable
                   key={`${page.id ?? 'g'}-${index}`}
                   onPress={() => openPage(itemSlug, itemTitle, itemUrl)}
-                  style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}>
+                  style={({ pressed }) => [styles.railCard, pressed && styles.itemCardPressed]}>
+                  {itemImage ? (
+                    <Image source={{ uri: itemImage }} style={styles.railImage} contentFit="cover" transition={180} />
+                  ) : (
+                    <View style={[styles.railImageFallback, styles.pageMarkerSoft]}>
+                      <ThemedText style={styles.railImageFallbackText}>PAGE</ThemedText>
+                    </View>
+                  )}
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
                   <ThemedText style={styles.itemBody}>{firstSentence(flattenText(page.content ?? page.Content)) || 'No page preview available.'}</ThemedText>
                 </Pressable>
               );
-            })
+              })}
+              </ScrollView>
           ) : (
             <ThemedText style={styles.emptyText}>No standalone pages configured.</ThemedText>
           )}
@@ -721,9 +880,38 @@ const styles = StyleSheet.create({
     opacity: 0.65,
     fontSize: 13,
   },
+  heroMeta: {
+    opacity: 0.7,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
   heroDescription: {
     opacity: 0.8,
     lineHeight: 20,
+  },
+  loadingStage: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.28)',
+    backgroundColor: 'rgba(255,216,77,0.12)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  loadingStageTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  loadingStageTitle: {
+    fontSize: 14,
+  },
+  loadingStageText: {
+    fontSize: 12,
+    lineHeight: 17,
+    opacity: 0.72,
   },
   heroMarkdown: {
     gap: 8,
@@ -800,10 +988,66 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: '#4B5563',
   },
+  seeMoreButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(217,70,239,0.35)',
+    backgroundColor: 'rgba(255,216,77,0.18)',
+  },
+  seeMoreText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#7C2D12',
+    letterSpacing: 0.3,
+  },
   chipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+  },
+  railScroll: {
+    marginHorizontal: -18,
+  },
+  railContent: {
+    paddingHorizontal: 18,
+    gap: 12,
+  },
+  railCard: {
+    width: 260,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.28)',
+    padding: 12,
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.62)',
+  },
+  railImage: {
+    width: '100%',
+    height: 132,
+    borderRadius: 14,
+    backgroundColor: 'rgba(120,120,120,0.14)',
+  },
+  railImageFallback: {
+    width: '100%',
+    height: 132,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  blogMarkerSoft: {
+    backgroundColor: 'rgba(34,211,238,0.16)',
+  },
+  pageMarkerSoft: {
+    backgroundColor: 'rgba(217,70,239,0.14)',
+  },
+  railImageFallbackText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+    color: '#475569',
   },
   chip: {
     paddingHorizontal: 10,
@@ -825,6 +1069,21 @@ const styles = StyleSheet.create({
   },
   itemCardPressed: {
     opacity: 0.78,
+  },
+  loadingSectionCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.45)',
+  },
+  loadingSectionText: {
+    fontSize: 13,
+    opacity: 0.72,
   },
   itemHeader: {
     flexDirection: 'row',
