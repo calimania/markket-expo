@@ -75,6 +75,12 @@ type Article = {
       thumbnail?: { url?: string };
     };
   };
+  store?: {
+    slug?: string;
+  } | null;
+  stores?: Array<{
+    slug?: string;
+  }>;
 };
 
 type Product = {
@@ -116,11 +122,26 @@ type Page = {
       };
     };
   };
+  store?: {
+    slug?: string;
+  } | null;
+  stores?: Array<{
+    slug?: string;
+  }>;
 };
 
 type CollectionResponse<T> = {
   data?: T[];
 };
+
+function extractSettledError(result: PromiseSettledResult<unknown>, fallback: string): string | null {
+  if (result.status !== 'rejected') return null;
+
+  const reason = result.reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === 'string' && reason.trim()) return reason;
+  return fallback;
+}
 
 const MARKDOWN_TOKEN_REGEX =
   /(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|(https?:\/\/[^\s]+))/g;
@@ -292,6 +313,34 @@ function resolveArticleImage(article: Article): string {
   );
 }
 
+function articleBelongsToStore(article: Article, targetSlug: string): boolean {
+  const slug = cleanText(targetSlug);
+  if (!slug) return true;
+
+  const direct = cleanText(article.store?.slug || '');
+  if (direct) return direct === slug;
+
+  const many = Array.isArray(article.stores)
+    ? article.stores.map((entry) => cleanText(entry?.slug || '')).filter(Boolean)
+    : [];
+
+  if (many.length) return many.includes(slug);
+
+  // If relation data is not populated, do not block the entry here.
+  return true;
+}
+
+function hasArticleOwnershipSignals(items: Article[]): boolean {
+  return items.some((entry) => {
+    const direct = cleanText(entry.store?.slug || '');
+    const many = Array.isArray(entry.stores)
+      ? entry.stores.map((store) => cleanText(store?.slug || '')).filter(Boolean)
+      : [];
+
+    return Boolean(direct) || many.length > 0;
+  });
+}
+
 function resolvePageImage(page: Page): string {
   return cleanText(
     page.seo?.socialImage?.formats?.medium?.url ||
@@ -304,6 +353,34 @@ function resolvePageImage(page: Page): string {
     page.SEO?.socialImage?.url ||
     ''
   );
+}
+
+function pageBelongsToStore(page: Page, targetSlug: string): boolean {
+  const slug = cleanText(targetSlug);
+  if (!slug) return true;
+
+  const direct = cleanText(page.store?.slug || '');
+  if (direct) return direct === slug;
+
+  const many = Array.isArray(page.stores)
+    ? page.stores.map((entry) => cleanText(entry?.slug || '')).filter(Boolean)
+    : [];
+
+  if (many.length) return many.includes(slug);
+
+  // If relation data is not populated, do not block the entry here.
+  return true;
+}
+
+function hasPageOwnershipSignals(items: Page[]): boolean {
+  return items.some((entry) => {
+    const direct = cleanText(entry.store?.slug || '');
+    const many = Array.isArray(entry.stores)
+      ? entry.stores.map((store) => cleanText(store?.slug || '')).filter(Boolean)
+      : [];
+
+    return Boolean(direct) || many.length > 0;
+  });
 }
 
 export default function StoreScreen() {
@@ -348,6 +425,9 @@ export default function StoreScreen() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [pages, setPages] = useState<Page[]>([]);
+  const [articlesError, setArticlesError] = useState<string | null>(null);
+  const [productsError, setProductsError] = useState<string | null>(null);
+  const [pagesError, setPagesError] = useState<string | null>(null);
 
   const openExternalUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {
@@ -427,24 +507,88 @@ export default function StoreScreen() {
     throw lastError ?? new Error('Could not load store details');
   }, [apiBaseUrl, cleanSlug, fetchJson]);
 
+  const fetchStoreArticles = useCallback(async (): Promise<CollectionResponse<Article>> => {
+    const baseQueries = [
+      `${apiBaseUrl}/api/articles?filter[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8`,
+      `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8`,
+    ];
+
+    const attempts = baseQueries.flatMap((base) => [
+      `${base}&populate[]=cover&populate[]=store&populate[]=stores`,
+      `${base}&populate[]=Cover&populate[]=store&populate[]=stores`,
+      `${base}&populate[cover]=*`,
+      `${base}&populate=*`,
+      base,
+    ]);
+
+    let lastError: Error | null = null;
+
+    for (const url of attempts) {
+      try {
+        return await fetchJson<CollectionResponse<Article>>(url);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('Could not load store articles');
+      }
+    }
+
+    throw lastError ?? new Error('Could not load store articles');
+  }, [apiBaseUrl, cleanSlug, fetchJson]);
+
+  const fetchStorePages = useCallback(async (): Promise<CollectionResponse<Page>> => {
+    const baseQueries = [
+      `${apiBaseUrl}/api/pages?filter[store][slug]=${encodeURIComponent(cleanSlug)}`,
+      `${apiBaseUrl}/api/pages?filter[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filter[store][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filters[store][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filter[stores][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filter[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filters[stores][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
+      `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}`,
+      `${apiBaseUrl}/api/pages?filter[stores][slug]=${encodeURIComponent(cleanSlug)}`,
+      `${apiBaseUrl}/api/pages?filters[stores][slug]=${encodeURIComponent(cleanSlug)}`,
+    ];
+
+    const attempts = baseQueries.flatMap((base) => [
+      base,
+      `${base}&populate[]=SEO.socialImage&populate[]=store&populate[]=stores`,
+      `${base}&populate[]=seo.socialImage&populate[]=store&populate[]=stores`,
+      `${base}&populate[SEO][populate][socialImage]=*`,
+      `${base}&populate[seo][populate][socialImage]=*`,
+      `${base}&populate=*`,
+    ]);
+
+    let lastError: Error | null = null;
+
+    for (const url of attempts) {
+      try {
+        return await fetchJson<CollectionResponse<Page>>(url);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('Could not load store pages');
+      }
+    }
+
+    throw lastError ?? new Error('Could not load store pages');
+  }, [apiBaseUrl, cleanSlug, fetchJson]);
+
   const load = useCallback(async () => {
     if (!ready || !cleanSlug) return;
 
     setLoading(true);
     setError(null);
+    setArticlesError(null);
+    setProductsError(null);
+    setPagesError(null);
 
     try {
       const [storeInfoResult, articlesResult, productsResult, pagesResult] = await Promise.allSettled([
         fetchStoreInfo(),
-        fetchJson<CollectionResponse<Article>>(
-          `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=Cover`
-        ),
+        fetchStoreArticles(),
         fetchJson<CollectionResponse<Product>>(
           `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
         ),
-        fetchJson<CollectionResponse<Page>>(
-          `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12&populate=*`
-        ),
+        fetchStorePages(),
       ]);
 
       if (storeInfoResult.status !== 'fulfilled') {
@@ -452,19 +596,40 @@ export default function StoreScreen() {
       }
 
       setStore(storeInfoResult.value.data?.[0] ?? null);
-      setArticles(articlesResult.status === 'fulfilled' ? (articlesResult.value.data ?? []) : []);
-      setProducts(productsResult.status === 'fulfilled' ? (productsResult.value.data ?? []) : []);
-      setPages(
-        pagesResult.status === 'fulfilled'
-          ? (pagesResult.value.data ?? []).filter((entry) => entry.Active !== false && entry.active !== false)
-          : []
-      );
+      if (articlesResult.status === 'fulfilled') {
+        const rawArticles = articlesResult.value.data ?? [];
+        const strictArticles = hasArticleOwnershipSignals(rawArticles)
+          ? rawArticles.filter((entry) => articleBelongsToStore(entry, cleanSlug))
+          : rawArticles;
+        setArticles(strictArticles);
+      } else {
+        setArticles([]);
+        setArticlesError(extractSettledError(articlesResult, 'Could not load blog posts'));
+      }
+
+      if (productsResult.status === 'fulfilled') {
+        setProducts(productsResult.value.data ?? []);
+      } else {
+        setProducts([]);
+        setProductsError(extractSettledError(productsResult, 'Could not load products'));
+      }
+
+      if (pagesResult.status === 'fulfilled') {
+        const rawPages = pagesResult.value.data ?? [];
+        const scopedPages = hasPageOwnershipSignals(rawPages)
+          ? rawPages.filter((entry) => pageBelongsToStore(entry, cleanSlug))
+          : rawPages;
+        setPages(scopedPages.filter((entry) => entry.Active !== false && entry.active !== false));
+      } else {
+        setPages([]);
+        setPagesError(extractSettledError(pagesResult, 'Could not load pages'));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error');
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, cleanSlug, fetchJson, fetchStoreInfo, ready]);
+  }, [apiBaseUrl, cleanSlug, fetchJson, fetchStoreArticles, fetchStoreInfo, fetchStorePages, ready]);
 
   useEffect(() => {
     load();
@@ -666,7 +831,8 @@ export default function StoreScreen() {
             </View>
           </View>
           <Pressable style={styles.seeMoreButton} onPress={openBlogArchive}>
-            <ThemedText style={styles.seeMoreText}>Keep reading</ThemedText>
+            <ThemedText style={styles.seeMoreText}>Keep reading all articles</ThemedText>
+            <ThemedText style={styles.seeMoreArrow}>→</ThemedText>
           </Pressable>
           {loading ? (
             <View style={styles.loadingSectionCard}>
@@ -705,7 +871,10 @@ export default function StoreScreen() {
               })}
               </ScrollView>
           ) : (
-            <ThemedText style={styles.emptyText}>No blog posts published yet.</ThemedText>
+            <View style={styles.emptyStateWrap}>
+              <ThemedText style={styles.emptyText}>No blog posts published yet.</ThemedText>
+              {articlesError ? <ThemedText style={styles.sectionErrorText}>Debug: {articlesError}</ThemedText> : null}
+            </View>
           )}
         </Animated.View>
 
@@ -741,7 +910,10 @@ export default function StoreScreen() {
               );
             })
           ) : (
-            <ThemedText style={styles.emptyText}>No products listed yet.</ThemedText>
+            <View style={styles.emptyStateWrap}>
+              <ThemedText style={styles.emptyText}>No products listed yet.</ThemedText>
+              {productsError ? <ThemedText style={styles.sectionErrorText}>Debug: {productsError}</ThemedText> : null}
+            </View>
           )}
         </Animated.View>
 
@@ -795,7 +967,10 @@ export default function StoreScreen() {
               })}
               </ScrollView>
           ) : (
-            <ThemedText style={styles.emptyText}>No standalone pages configured.</ThemedText>
+            <View style={styles.emptyStateWrap}>
+              <ThemedText style={styles.emptyText}>No pages published yet.</ThemedText>
+              {pagesError ? <ThemedText style={styles.sectionErrorText}>Debug: {pagesError}</ThemedText> : null}
+            </View>
           )}
         </Animated.View>
       </ScrollView>
@@ -819,6 +994,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 20,
     gap: 10,
+  },
+  emptyStateWrap: {
+    gap: 6,
+  },
+  sectionErrorText: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#B42318',
+    opacity: 0.95,
   },
   hero: {
     borderRadius: 18,
@@ -990,18 +1174,27 @@ const styles = StyleSheet.create({
   },
   seeMoreButton: {
     alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(217,70,239,0.35)',
-    backgroundColor: 'rgba(255,216,77,0.18)',
+    borderColor: 'rgba(217,70,239,0.28)',
+    backgroundColor: 'rgba(255,252,242,0.94)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   seeMoreText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#7C2D12',
+    color: '#86198F',
     letterSpacing: 0.3,
+  },
+  seeMoreArrow: {
+    fontSize: 15,
+    lineHeight: 15,
+    fontWeight: '700',
+    color: '#0891B2',
   },
   chipsRow: {
     flexDirection: 'row',
