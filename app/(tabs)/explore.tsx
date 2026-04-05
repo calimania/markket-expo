@@ -1,13 +1,14 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import {
   DEFAULT_API_BASE_URL,
-  DEFAULT_DISPLAY_BASE_URL,
   DEFAULT_CONTENT_STORE_SLUG,
+  DEFAULT_DISPLAY_BASE_URL,
   DEFAULT_LINK_OPEN_MODE,
   DEFAULT_STORES_QUERY,
   DEFAULT_STORE_SLUG,
@@ -18,6 +19,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const {
     apiBaseUrl,
     displayBaseUrl,
@@ -78,14 +80,19 @@ export default function SettingsScreen() {
 
   if (!ready) {
     return (
-      <ThemedView style={styles.container}>
+      <ThemedView style={[styles.flex, { paddingTop: insets.top + 20, paddingHorizontal: 18 }]}>
         <ThemedText>Loading settings...</ThemedText>
       </ThemedView>
     );
   }
 
   return (
-    <ThemedView style={styles.container}>
+    <ThemedView style={styles.flex}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          contentContainerStyle={[styles.container, { paddingTop: insets.top + 16 }]}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled">
       <ThemedText type="title" style={styles.title}>
         Settings
       </ThemedText>
@@ -193,10 +200,10 @@ export default function SettingsScreen() {
       <View style={styles.group}>
         <ThemedText type="defaultSemiBold">Legal Pages</ThemedText>
         <View style={styles.legalRow}>
-          <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/legal/privacy')}>
+              <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push({ pathname: '/legal/[kind]', params: { kind: 'privacy' } } as never)}>
             <ThemedText>Privacy</ThemedText>
           </Pressable>
-          <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/legal/terms')}>
+              <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push({ pathname: '/legal/[kind]', params: { kind: 'terms' } } as never)}>
             <ThemedText>Terms</ThemedText>
           </Pressable>
         </View>
@@ -207,15 +214,34 @@ export default function SettingsScreen() {
       ) : (
         <ThemedText style={styles.hint}>Change URLs and query params to point this app at your own Markket instance.</ThemedText>
       )}
+
+          <View style={styles.group}>
+            <ThemedText type="defaultSemiBold">Disclaimer</ThemedText>
+            <ThemedText style={styles.disclaimer}>
+              This app is a community client for the Markket platform. Content, listings, and data published by store owners are their sole responsibility. Markket is not liable for user-generated content or transactions made through third-party stores.
+            </ThemedText>
+          </View>
+
+          <View style={styles.group}>
+            <ThemedText type="defaultSemiBold">Contact</ThemedText>
+            <ThemedText style={styles.contactLine}>Legal · legal@markket.place</ThemedText>
+            <ThemedText style={styles.contactLine}>Support · support@markket.place</ThemedText>
+            <ThemedText style={styles.contactLine}>Orders · orders@markket.place</ThemedText>
+            <ThemedText style={styles.contactLine}>Selling · selling@markket.place</ThemedText>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  flex: {
     flex: 1,
+  },
+  container: {
     paddingHorizontal: 18,
-    paddingTop: 24,
+    paddingBottom: 48,
   },
   title: {
     fontSize: 30,
@@ -291,5 +317,15 @@ const styles = StyleSheet.create({
   inlineHint: {
     opacity: 0.7,
     lineHeight: 18,
+  },
+  disclaimer: {
+    opacity: 0.7,
+    lineHeight: 20,
+    fontSize: 13,
+  },
+  contactLine: {
+    opacity: 0.75,
+    fontSize: 13,
+    lineHeight: 22,
   },
 });

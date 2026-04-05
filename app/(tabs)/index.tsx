@@ -16,6 +16,7 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type StoreUrl = {
   id: number;
@@ -95,6 +96,7 @@ function getTintColors(storeId: number): { top: string; bottom: string } {
 export default function HomeScreen() {
   const router = useRouter();
   const { apiBaseUrl, defaultStoreSlug, linkOpenMode, ready, storesQuery } = useAppConfig();
+  const insets = useSafeAreaInsets();
 
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
@@ -286,7 +288,7 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <ThemedText type="title" style={styles.headerTitle}>
           markket stores
         </ThemedText>
@@ -309,7 +311,7 @@ export default function HomeScreen() {
         data={stores}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderStoreCard}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 34 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
