@@ -209,6 +209,18 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+          <View style={styles.group}>
+            <ThemedText type="defaultSemiBold">Account</ThemedText>
+            <View style={styles.legalRow}>
+              <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/profile' as never)}>
+                <ThemedText>Profile & Session</ThemedText>
+              </Pressable>
+            </View>
+            <ThemedText style={styles.inlineHint}>
+              Use this to capture magic-login sessions from WebView and test native API auth.
+            </ThemedText>
+          </View>
+
       {saved ? (
         <ThemedText style={styles.hint}>Saved. Return to Home and pull to refresh.</ThemedText>
       ) : (
