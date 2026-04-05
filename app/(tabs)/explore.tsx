@@ -1,112 +1,295 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+import {
+  DEFAULT_API_BASE_URL,
+  DEFAULT_DISPLAY_BASE_URL,
+  DEFAULT_CONTENT_STORE_SLUG,
+  DEFAULT_LINK_OPEN_MODE,
+  DEFAULT_STORES_QUERY,
+  DEFAULT_STORE_SLUG,
+  type LinkOpenMode,
+  useAppConfig,
+} from '@/hooks/use-app-config';
+import { useThemeColor } from '@/hooks/use-theme-color';
 
-export default function TabTwoScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
+export default function SettingsScreen() {
+  const router = useRouter();
+  const {
+    apiBaseUrl,
+    displayBaseUrl,
+    defaultStoreSlug,
+    contentStoreSlug,
+    linkOpenMode,
+    storesQuery,
+    setApiBaseUrl,
+    setDisplayBaseUrl,
+    setDefaultStoreSlug,
+    setContentStoreSlug,
+    setLinkOpenMode,
+    setStoresQuery,
+    resetDefaults,
+    ready,
+  } = useAppConfig();
+
+  const [apiInput, setApiInput] = useState(apiBaseUrl);
+  const [displayInput, setDisplayInput] = useState(displayBaseUrl);
+  const [slugInput, setSlugInput] = useState(defaultStoreSlug);
+  const [contentSlugInput, setContentSlugInput] = useState(contentStoreSlug);
+  const [openModeInput, setOpenModeInput] = useState<LinkOpenMode>(linkOpenMode);
+  const [queryInput, setQueryInput] = useState(storesQuery);
+  const [saved, setSaved] = useState(false);
+
+  const borderColor = useThemeColor({}, 'icon');
+  const inputBackground = useThemeColor({}, 'background');
+
+  useEffect(() => {
+    setApiInput(apiBaseUrl);
+    setDisplayInput(displayBaseUrl);
+    setSlugInput(defaultStoreSlug);
+    setContentSlugInput(contentStoreSlug);
+    setOpenModeInput(linkOpenMode);
+    setQueryInput(storesQuery);
+  }, [apiBaseUrl, contentStoreSlug, defaultStoreSlug, displayBaseUrl, linkOpenMode, storesQuery]);
+
+  const save = () => {
+    setApiBaseUrl(apiInput);
+    setDisplayBaseUrl(displayInput);
+    setDefaultStoreSlug(slugInput);
+    setContentStoreSlug(contentSlugInput);
+    setLinkOpenMode(openModeInput);
+    setStoresQuery(queryInput);
+    setSaved(true);
+  };
+
+  const reset = () => {
+    resetDefaults();
+    setApiInput(DEFAULT_API_BASE_URL);
+    setDisplayInput(DEFAULT_DISPLAY_BASE_URL);
+    setSlugInput(DEFAULT_STORE_SLUG);
+    setContentSlugInput(DEFAULT_CONTENT_STORE_SLUG);
+    setOpenModeInput(DEFAULT_LINK_OPEN_MODE);
+    setQueryInput(DEFAULT_STORES_QUERY);
+    setSaved(true);
+  };
+
+  if (!ready) {
+    return (
+      <ThemedView style={styles.container}>
+        <ThemedText>Loading settings...</ThemedText>
       </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
+    );
+  }
+
+  return (
+    <ThemedView style={styles.container}>
+      <ThemedText type="title" style={styles.title}>
+        Settings
+      </ThemedText>
+      <ThemedText style={styles.subtitle}>Markket community app configuration</ThemedText>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">API Base URL</ThemedText>
+        <TextInput
+          value={apiInput}
+          onChangeText={setApiInput}
+          placeholder="https://api.markket.place"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          style={[styles.input, { borderColor, backgroundColor: inputBackground }]}
         />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Display Base URL</ThemedText>
+        <TextInput
+          value={displayInput}
+          onChangeText={setDisplayInput}
+          placeholder="https://markket.place/"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          style={[styles.input, { borderColor, backgroundColor: inputBackground }]}
+        />
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Default Store Slug</ThemedText>
+        <TextInput
+          value={slugInput}
+          onChangeText={setSlugInput}
+          placeholder="your-store-slug"
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[styles.input, { borderColor, backgroundColor: inputBackground }]}
+        />
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Content Store Slug</ThemedText>
+        <TextInput
+          value={contentSlugInput}
+          onChangeText={setContentSlugInput}
+          placeholder={DEFAULT_CONTENT_STORE_SLUG}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[styles.input, { borderColor, backgroundColor: inputBackground }]}
+        />
+        <ThemedText style={styles.inlineHint}>
+          Used for shared pages like privacy and terms. Defaults from EXPO_PUBLIC_CONTENT_STORE_SLUG.
         </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Link Open Mode</ThemedText>
+        <View style={styles.modeRow}>
+          <Pressable
+            style={[styles.modeButton, openModeInput === 'ask' && styles.modeButtonActive]}
+            onPress={() => setOpenModeInput('ask')}>
+            <ThemedText style={styles.modeButtonText}>Ask</ThemedText>
+          </Pressable>
+          <Pressable
+            style={[styles.modeButton, openModeInput === 'webview' && styles.modeButtonActive]}
+            onPress={() => setOpenModeInput('webview')}>
+            <ThemedText style={styles.modeButtonText}>WebView</ThemedText>
+          </Pressable>
+          <Pressable
+            style={[styles.modeButton, openModeInput === 'browser' && styles.modeButtonActive]}
+            onPress={() => setOpenModeInput('browser')}>
+            <ThemedText style={styles.modeButtonText}>Browser</ThemedText>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Stores Query String</ThemedText>
+        <TextInput
+          value={queryInput}
+          onChangeText={setQueryInput}
+          placeholder={DEFAULT_STORES_QUERY}
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+          style={[styles.input, styles.queryInput, { borderColor, backgroundColor: inputBackground }]}
+        />
+        <ThemedText style={styles.hint}>
+          Strapi query params for the stores feed. Page number is handled in-app.
         </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+      </View>
+
+      <View style={styles.buttonRow}>
+        <Pressable style={[styles.button, styles.primaryButton]} onPress={save}>
+          <ThemedText style={styles.primaryButtonText}>Save</ThemedText>
+        </Pressable>
+        <Pressable style={[styles.button, styles.secondaryButton]} onPress={reset}>
+          <ThemedText>Reset</ThemedText>
+        </Pressable>
+      </View>
+
+      <View style={styles.group}>
+        <ThemedText type="defaultSemiBold">Legal Pages</ThemedText>
+        <View style={styles.legalRow}>
+          <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/legal/privacy')}>
+            <ThemedText>Privacy</ThemedText>
+          </Pressable>
+          <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/legal/terms')}>
+            <ThemedText>Terms</ThemedText>
+          </Pressable>
+        </View>
+      </View>
+
+      {saved ? (
+        <ThemedText style={styles.hint}>Saved. Return to Home and pull to refresh.</ThemedText>
+      ) : (
+        <ThemedText style={styles.hint}>Change URLs and query params to point this app at your own Markket instance.</ThemedText>
+      )}
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    paddingHorizontal: 18,
+    paddingTop: 24,
   },
-  titleContainer: {
+  title: {
+    fontSize: 30,
+    lineHeight: 34,
+  },
+  subtitle: {
+    marginTop: 6,
+    opacity: 0.7,
+  },
+  group: {
+    marginTop: 18,
+    gap: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  queryInput: {
+    minHeight: 88,
+    textAlignVertical: 'top',
+  },
+  buttonRow: {
+    marginTop: 22,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modeRow: {
     flexDirection: 'row',
     gap: 8,
+  },
+  legalRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modeButton: {
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.45)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  modeButtonActive: {
+    borderColor: '#0a7ea4',
+    backgroundColor: 'rgba(10, 126, 164, 0.12)',
+  },
+  modeButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  button: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  primaryButton: {
+    backgroundColor: '#0a7ea4',
+  },
+  primaryButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.45)',
+  },
+  hint: {
+    marginTop: 16,
+    opacity: 0.75,
+  },
+  inlineHint: {
+    opacity: 0.7,
+    lineHeight: 18,
   },
 });

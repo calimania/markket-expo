@@ -1,50 +1,59 @@
-# Welcome to your Expo app 👋
+# Markket Community App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Markket is great. This app is a simple community-first mobile client to browse Markket stores and open each store directly in an in-app web view.
 
-## Get started
+Built with Expo + React Native + Expo Router.
 
-1. Install dependencies
+## What It Does
 
-   ```bash
-   npm install
-   ```
+- Home tab shows a card list of stores from the Markket API.
+- Settings tab lets you change:
+  - API base URL (for your own Strapi/Markket instance)
+  - Display base URL (used when opening store pages)
+- Tapping a store opens a WebView at `displayBaseUrl + storeSlug`.
+- Settings are persisted locally with AsyncStorage.
 
-2. Start the app
+## Default URLs
 
-   ```bash
-   npx expo start
-   ```
+- API base URL: `https://api.markket.place`
+- Display base URL: `https://markket.place/`
 
-In the output, you'll find options to open the app in a
+The app requests stores with logos from this path:
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+`/api/stores?populate[]=Logo`
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+## Run Locally
 
-## Get a fresh project
-
-When you're ready, run:
+1. Install dependencies:
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Start the app:
 
-## Learn more
+```bash
+npx expo start
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+3. Open on iOS, Android, or web from Expo CLI.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Useful Scripts
 
-## Join the community
+- Start dev server: `npm run start`
+- iOS: `npm run ios`
+- Android: `npm run android`
+- Web: `npm run web`
+- Lint: `npm run lint`
 
-Join our community of developers creating universal apps.
+## Project Structure
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `app/(tabs)/index.tsx`: Home list of Markket stores
+- `app/(tabs)/explore.tsx`: Settings screen
+- `app/store/[slug].tsx`: Store WebView screen
+- `hooks/use-app-config.tsx`: Persisted app config and URL settings
+
+## Notes
+
+- If you change the API base URL in Settings, return to Home and pull to refresh.
+- If you host your own instance, ensure CORS/network rules allow app access.
