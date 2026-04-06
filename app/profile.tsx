@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
 import { maskToken, useAuthSession } from '@/hooks/use-auth-session';
+import { apiGet } from '@/lib/api';
 
 type MeResponse = {
   id?: number;
@@ -44,18 +45,16 @@ export default function ProfileScreen() {
 
     setChecking(true);
     try {
-      const response = await fetch(`${apiBaseUrl}/api/users/me`, {
-        headers: {
-          Authorization: `Bearer ${session.token}`,
-        },
+      const result = await apiGet<MeResponse>('/api/users/me', {
+        baseUrl: apiBaseUrl,
+        token: session.token,
       });
 
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
+      if (!result.ok) {
+        throw new Error(`API returned ${result.error.status}`);
       }
 
-      const payload = (await response.json()) as MeResponse;
-      setMe(payload);
+      setMe(result.data);
     } catch (err) {
       Alert.alert('Could not load profile', err instanceof Error ? err.message : 'Unknown API error');
     } finally {

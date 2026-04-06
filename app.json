@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.dvidsilva.markket",
+      "bundleIdentifier": "com.calimania.markket",
       "associatedDomains": [
         "applinks:markket.place",
         "applinks:www.markket.place"
@@ -20,7 +20,7 @@
       }
     },
     "android": {
-      "package": "com.dvidsilva.markket",
+      "package": "com.calimania.markket",
       "adaptiveIcon": {
         "backgroundColor": "#121212",
         "foregroundImage": "./assets/images/adaptive-icon.png"
@@ -67,7 +67,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

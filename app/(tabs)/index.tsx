@@ -17,6 +17,7 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { apiGet } from '@/lib/api';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type StoreUrl = {
@@ -113,13 +114,15 @@ export default function HomeScreen() {
     setError(null);
 
     try {
-      const response = await fetch(`${apiBaseUrl}${createStoresPath(storesQuery, targetPage)}`);
+      const result = await apiGet<StoresApiResponse>(createStoresPath(storesQuery, targetPage), {
+        baseUrl: apiBaseUrl,
+      });
 
-      if (!response.ok) {
-        throw new Error(`Could not load stores (${response.status})`);
+      if (!result.ok) {
+        throw new Error(`Could not load stores (${result.error.status})`);
       }
 
-      const payload = (await response.json()) as StoresApiResponse;
+      const payload = result.data;
       const nextStores = payload.data ?? [];
 
       setStores((current) => {

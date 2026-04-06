@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const STORAGE_KEY = 'markket-community-app-auth-session';
@@ -32,7 +32,7 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
 
     async function hydrate() {
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        const raw = await SecureStore.getItemAsync(STORAGE_KEY);
         if (!raw || cancelled) return;
 
         const parsed = JSON.parse(raw) as Partial<AuthSession>;
@@ -69,12 +69,12 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
     };
 
     setSession(next);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(next));
   }, []);
 
   const clearSession = useCallback(async () => {
     setSession(null);
-    await AsyncStorage.removeItem(STORAGE_KEY);
+    await SecureStore.deleteItemAsync(STORAGE_KEY);
   }, []);
 
   const value = useMemo<AuthSessionContextValue>(
