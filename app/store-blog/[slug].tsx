@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -44,9 +44,9 @@ type Article = {
   store?: {
     slug?: string;
   } | null;
-  stores?: Array<{
+  stores?: {
     slug?: string;
-  }>;
+  }[];
 };
 
 type CollectionResponse<T> = {
