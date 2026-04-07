@@ -22,12 +22,14 @@ export function ThemedText({
   lightColor,
   darkColor,
   type = 'default',
+  allowFontScaling,
   ...rest
 }: ThemedTextProps) {
   const color = useThemeColor({ light: lightColor, dark: darkColor }, 'text');
 
   return (
     <Text
+      allowFontScaling={allowFontScaling ?? true}
       style={[
         { color },
         type === 'default' ? styles.default : undefined,
@@ -95,8 +97,8 @@ const styles = StyleSheet.create({
   },
   link: {
     fontFamily: 'RobotoMono',
-    lineHeight: 30,
-    fontSize: 16,
+    lineHeight: 32,
+    fontSize: 17,
     color: '#0891B2',
   },
 });

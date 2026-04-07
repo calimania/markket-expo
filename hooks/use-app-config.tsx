@@ -5,7 +5,7 @@ const STORAGE_KEY = 'markket-community-app-config';
 
 export const DEFAULT_API_BASE_URL = 'https://api.markket.place';
 export const DEFAULT_DISPLAY_BASE_URL = 'https://markket.place/';
-export const DEFAULT_STORE_SLUG = '';
+export const DEFAULT_STORE_SLUG = 'ios';
 export const DEFAULT_LINK_OPEN_MODE = 'ask' as const;
 export const DEFAULT_STORES_QUERY =
   'populate[]=Logo&populate[]=URLS&sort[0]=updatedAt:desc&pagination[pageSize]=20';
