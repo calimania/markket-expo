@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -9,7 +9,6 @@ import 'react-native-reanimated';
 import { AppConfigProvider } from '@/hooks/use-app-config';
 import { AuthSessionProvider } from '@/hooks/use-auth-session';
 import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -20,7 +19,6 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
   const [fontsLoaded] = useFonts({
     Manrope: require('@/assets/fonts/Manrope-VariableFont_wght.ttf'),
     Newsreader: require('@/assets/fonts/Newsreader-VariableFont_opsz,wght.ttf'),
@@ -39,32 +37,18 @@ export default function RootLayout() {
     return null;
   }
 
-  const navigationTheme =
-    colorScheme === 'dark'
-      ? {
-        ...DarkTheme,
-        colors: {
-          ...DarkTheme.colors,
-          primary: Colors.dark.tint,
-          background: Colors.dark.background,
-          card: '#11162A',
-          text: Colors.dark.text,
-          border: '#1F2A44',
-          notification: '#D946EF',
-        },
-      }
-      : {
-        ...DefaultTheme,
-        colors: {
-          ...DefaultTheme.colors,
-          primary: Colors.light.tint,
-          background: Colors.light.background,
-          card: '#FFF8DB',
-          text: Colors.light.text,
-          border: '#FDE68A',
-          notification: '#D946EF',
-        },
-      };
+  const navigationTheme = {
+    ...DefaultTheme,
+    colors: {
+      ...DefaultTheme.colors,
+      primary: Colors.light.tint,
+      background: Colors.light.background,
+      card: '#FFF8DB',
+      text: Colors.light.text,
+      border: '#FDE68A',
+      notification: '#D946EF',
+    },
+  };
 
   return (
     <AppConfigProvider>
@@ -93,7 +77,7 @@ export default function RootLayout() {
             <Stack.Screen name="web" options={{ title: 'Preview Link' }} />
             <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
           </Stack>
-          <StatusBar style="auto" />
+          <StatusBar style="dark" />
         </ThemeProvider>
       </AuthSessionProvider>
     </AppConfigProvider>

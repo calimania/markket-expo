@@ -182,14 +182,16 @@ function getEmbedUrl(url: string): string {
 
 export default function ArticleScreen() {
   const { apiBaseUrl, ready } = useAppConfig();
-  const { slug, store, title } = useLocalSearchParams<{
+  const { slug, store, storeId, title } = useLocalSearchParams<{
     slug?: string | string[];
     store?: string | string[];
+    storeId?: string | string[];
     title?: string | string[];
   }>();
 
   const articleSlug = normalizeParam(slug).trim();
   const storeSlug = normalizeParam(store).trim();
+  const storeIdValue = normalizeParam(storeId).trim();
   const titleFallback = cleanText(normalizeParam(title)) || 'Article';
 
   const [loading, setLoading] = useState(true);
@@ -310,24 +312,54 @@ export default function ArticleScreen() {
     setError(null);
 
     try {
-      const params = new URLSearchParams();
-      params.set('filters[slug]', articleSlug);
+      const attempts: string[] = [];
+
+      const addAttempt = (builder: (params: URLSearchParams) => void) => {
+        const params = new URLSearchParams();
+        params.set('filters[slug]', articleSlug);
+        params.set('pagination[pageSize]', '1');
+        params.set('sort[0]', 'updatedAt:desc');
+        params.set('populate[]', 'cover');
+        builder(params);
+        attempts.push(`${apiBaseUrl}/api/articles?${params.toString()}`);
+      };
+
       if (storeSlug) {
-        params.set('filters[store][slug]', storeSlug);
-      }
-      params.set('pagination[pageSize]', '1');
-      params.set('sort[0]', 'updatedAt:desc');
-      params.set('populate[]', 'cover');
-
-      const response = await fetch(`${apiBaseUrl}/api/articles?${params.toString()}`);
-      if (!response.ok) {
-        throw new Error(`API error ${response.status}`);
+        addAttempt((params) => params.set('filter[store][slug]', storeSlug));
+        addAttempt((params) => params.set('filters[store][slug]', storeSlug));
+        addAttempt((params) => params.set('filter[stores][slug]', storeSlug));
+        addAttempt((params) => params.set('filters[stores][slug]', storeSlug));
       }
 
-      const payload = (await response.json()) as CollectionResponse<Article>;
-      const first = payload.data?.[0] ?? null;
+      if (storeIdValue) {
+        addAttempt((params) => params.set('filter[store][id]', storeIdValue));
+        addAttempt((params) => params.set('filters[store][id]', storeIdValue));
+        addAttempt((params) => params.set('filter[stores][id]', storeIdValue));
+        addAttempt((params) => params.set('filters[stores][id]', storeIdValue));
+      }
+
+      addAttempt(() => { });
+
+      let first: Article | null = null;
+      let lastStatus: number | null = null;
+
+      for (const url of attempts) {
+        const response = await fetch(url);
+        if (!response.ok) {
+          lastStatus = response.status;
+          continue;
+        }
+
+        const payload = (await response.json()) as CollectionResponse<Article>;
+        first = payload.data?.[0] ?? null;
+        if (first) break;
+      }
+
       if (!first) {
-        throw new Error('Article not found');
+        if (lastStatus) {
+          throw new Error(`API error ${lastStatus}`);
+        }
+        throw new Error('Article not found for this store');
       }
 
       setArticle(first);
@@ -336,7 +368,7 @@ export default function ArticleScreen() {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, articleSlug, ready, storeSlug]);
+  }, [apiBaseUrl, articleSlug, ready, storeIdValue, storeSlug]);
 
   useEffect(() => {
     load();

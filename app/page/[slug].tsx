@@ -53,6 +53,10 @@ type PageRecord = {
       };
     } | null;
   } | null;
+  store?: {
+    id?: number;
+    slug?: string;
+  } | null;
 };
 
 type CollectionResponse<T> = {
@@ -89,6 +93,39 @@ function resolveCoverUrl(page: PageRecord | null): string {
       image?.url ||
       ''
   );
+}
+
+function pageMatchesStore(page: PageRecord | null, storeSlug: string, storeId: string): boolean {
+  if (!page) return false;
+
+  const targetSlug = cleanText(storeSlug);
+  const targetId = cleanText(storeId);
+
+  const directSlug = cleanText(page.store?.slug || '');
+  const directId = typeof page.store?.id === 'number' ? String(page.store.id) : '';
+
+  if (targetId && directId) return directId === targetId;
+  if (targetSlug && directSlug) return directSlug === targetSlug;
+
+  return !targetSlug && !targetId;
+}
+
+function pageHasStoreSignals(page: PageRecord | null): boolean {
+  if (!page) return false;
+  if (cleanText(page.store?.slug || '')) return true;
+  if (typeof page.store?.id === 'number') return true;
+  return false;
+}
+
+function logPageDebug(label: string, payload?: unknown) {
+  if (!__DEV__) return;
+
+  if (payload === undefined) {
+    console.log(`[page-debug] ${label}`);
+    return;
+  }
+
+  console.log(`[page-debug] ${label}`, payload);
 }
 
 function inlineText(nodes?: InlineNode[]): string {
@@ -184,14 +221,16 @@ function getEmbedUrl(url: string): string {
 
 export default function PageScreen() {
   const { apiBaseUrl, ready } = useAppConfig();
-  const { slug, store, title } = useLocalSearchParams<{
+  const { slug, store, storeId, title } = useLocalSearchParams<{
     slug?: string | string[];
     store?: string | string[];
+    storeId?: string | string[];
     title?: string | string[];
   }>();
 
   const pageSlug = normalizeParam(slug).trim();
   const storeSlug = normalizeParam(store).trim();
+  const storeIdValue = normalizeParam(storeId).trim();
   const titleFallback = cleanText(normalizeParam(title)) || 'Page';
 
   const [loading, setLoading] = useState(true);
@@ -306,38 +345,93 @@ export default function PageScreen() {
   );
 
   const fetchPage = useCallback(async () => {
-    const requests = [
-      (() => {
-        const params = new URLSearchParams();
-        params.set('filters[slug]', pageSlug);
-        if (storeSlug) params.set('filters[store][slug]', storeSlug);
-        params.set('pagination[pageSize]', '1');
-        params.set('populate[]', 'SEO.socialImage');
-        return `${apiBaseUrl}/api/pages?${params.toString()}`;
-      })(),
-      (() => {
-        const params = new URLSearchParams();
-        params.set('filter[slug]', pageSlug);
-        if (storeSlug) params.set('filter[store][slug]', storeSlug);
-        params.set('pagination[pageSize]', '1');
-        params.set('populate[]', 'SEO.socialImage');
-        return `${apiBaseUrl}/api/pages?${params.toString()}`;
-      })(),
-    ];
+    logPageDebug('route params', {
+      pageSlug,
+      storeSlug,
+      storeIdValue,
+    });
 
-    for (const url of requests) {
+    const requests: { url: string; trustScoped: boolean }[] = [];
+
+    const addRequest = (builder: (params: URLSearchParams) => void, trustScoped = false) => {
+      const params = new URLSearchParams();
+      params.set('filters[slug][$eq]', pageSlug);
+      params.set('pagination[pageSize]', '1');
+      params.append('populate[]', 'SEO.socialImage');
+      params.append('populate[]', 'store');
+      builder(params);
+      requests.push({ url: `${apiBaseUrl}/api/pages?${params.toString()}`, trustScoped });
+    };
+
+    if (storeSlug) {
+      addRequest((params) => params.set('filters[store][slug][$eq]', storeSlug), true);
+      addRequest((params) => params.set('filters[store][slug]', storeSlug), true);
+      addRequest((params) => params.set('filter[store][slug][$eq]', storeSlug), true);
+      addRequest((params) => params.set('filter[store][slug]', storeSlug), true);
+    }
+
+    if (storeIdValue) {
+      addRequest((params) => params.set('filters[store][id][$eq]', storeIdValue), true);
+      addRequest((params) => params.set('filters[store][id]', storeIdValue), true);
+      addRequest((params) => params.set('filter[store][id][$eq]', storeIdValue), true);
+      addRequest((params) => params.set('filter[store][id]', storeIdValue), true);
+    }
+
+    logPageDebug('request count', requests.length);
+
+    for (const request of requests) {
+      const { url, trustScoped } = request;
+      logPageDebug('request start', { url, trustScoped });
+
       const response = await fetch(url);
       if (!response.ok) {
+        let errorBody: unknown = null;
+
+        try {
+          errorBody = await response.json();
+        } catch {
+          try {
+            errorBody = await response.text();
+          } catch {
+            errorBody = null;
+          }
+        }
+
+        logPageDebug('request failed', {
+          url,
+          status: response.status,
+          errorBody,
+        });
         continue;
       }
 
       const payload = (await response.json()) as CollectionResponse<PageRecord>;
       const first = payload.data?.[0] ?? null;
-      if (first) return first;
+      logPageDebug('request success', {
+        url,
+        pageId: first?.id,
+        pageSlug: first?.slug,
+        pageTitle: first?.title || first?.Title,
+        pageStoreSlug: first?.store?.slug,
+        pageStoreId: first?.store?.id,
+      });
+
+      if (trustScoped && first && !pageHasStoreSignals(first)) {
+        logPageDebug('accepting scoped page without relation signals', { url, pageId: first.id });
+        return first;
+      }
+
+      if (pageMatchesStore(first, storeSlug, storeIdValue)) {
+        logPageDebug('accepted page match', { url, pageId: first?.id });
+        return first;
+      }
+
+      logPageDebug('rejected page mismatch', { url, pageId: first?.id });
     }
 
-    throw new Error('Page not found');
-  }, [apiBaseUrl, pageSlug, storeSlug]);
+    logPageDebug('no page match found');
+    throw new Error('Page not found for this store');
+  }, [apiBaseUrl, pageSlug, storeIdValue, storeSlug]);
 
   const load = useCallback(async () => {
     if (!ready || !pageSlug) return;

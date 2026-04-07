@@ -78,9 +78,9 @@ type Article = {
   store?: {
     slug?: string;
   } | null;
-  stores?: Array<{
+  stores?: {
     slug?: string;
-  }>;
+  }[];
 };
 
 type Product = {
@@ -125,9 +125,9 @@ type Page = {
   store?: {
     slug?: string;
   } | null;
-  stores?: Array<{
+  stores?: {
     slug?: string;
-  }>;
+  }[];
 };
 
 type CollectionResponse<T> = {
@@ -317,16 +317,22 @@ function articleBelongsToStore(article: Article, targetSlug: string): boolean {
   const slug = cleanText(targetSlug);
   if (!slug) return true;
 
+  // Check if store/stores was populated (key present, even if null/empty)
+  const storePopulated = article.store !== undefined;
+  const storesPopulated = article.stores !== undefined;
+
   const direct = cleanText(article.store?.slug || '');
   if (direct) return direct === slug;
 
   const many = Array.isArray(article.stores)
     ? article.stores.map((entry) => cleanText(entry?.slug || '')).filter(Boolean)
     : [];
-
   if (many.length) return many.includes(slug);
 
-  // If relation data is not populated, do not block the entry here.
+  // Relation was populated but null/empty → article genuinely has no store → exclude
+  if (storePopulated || storesPopulated) return false;
+
+  // Relation was not requested → can't verify → fail-open
   return true;
 }
 
@@ -359,16 +365,22 @@ function pageBelongsToStore(page: Page, targetSlug: string): boolean {
   const slug = cleanText(targetSlug);
   if (!slug) return true;
 
+  // Check if store/stores was populated (key present, even if null/empty)
+  const storePopulated = page.store !== undefined;
+  const storesPopulated = page.stores !== undefined;
+
   const direct = cleanText(page.store?.slug || '');
   if (direct) return direct === slug;
 
   const many = Array.isArray(page.stores)
     ? page.stores.map((entry) => cleanText(entry?.slug || '')).filter(Boolean)
     : [];
-
   if (many.length) return many.includes(slug);
 
-  // If relation data is not populated, do not block the entry here.
+  // Relation was populated but null/empty → page genuinely has no store → exclude
+  if (storePopulated || storesPopulated) return false;
+
+  // Relation was not requested → can't verify → fail-open
   return true;
 }
 
@@ -380,6 +392,14 @@ function hasPageOwnershipSignals(items: Page[]): boolean {
       : [];
 
     return Boolean(direct) || many.length > 0;
+  });
+}
+
+function sortPagesByTitle(items: Page[]): Page[] {
+  return [...items].sort((left, right) => {
+    const leftTitle = cleanText(left.title || left.Title || '').toLocaleLowerCase();
+    const rightTitle = cleanText(right.title || right.Title || '').toLocaleLowerCase();
+    return leftTitle.localeCompare(rightTitle);
   });
 }
 
@@ -508,18 +528,13 @@ export default function StoreScreen() {
   }, [apiBaseUrl, cleanSlug, fetchJson]);
 
   const fetchStoreArticles = useCallback(async (): Promise<CollectionResponse<Article>> => {
-    const baseQueries = [
-      `${apiBaseUrl}/api/articles?filter[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8`,
-      `${apiBaseUrl}/api/articles?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=8`,
+    const encoded = encodeURIComponent(cleanSlug);
+    const attempts = [
+      `${apiBaseUrl}/api/articles?filters[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
+      `${apiBaseUrl}/api/articles?filters[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
+      `${apiBaseUrl}/api/articles?filter[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
+      `${apiBaseUrl}/api/articles?filter[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
     ];
-
-    const attempts = baseQueries.flatMap((base) => [
-      `${base}&populate[]=cover&populate[]=store&populate[]=stores`,
-      `${base}&populate[]=Cover&populate[]=store&populate[]=stores`,
-      `${base}&populate[cover]=*`,
-      `${base}&populate=*`,
-      base,
-    ]);
 
     let lastError: Error | null = null;
 
@@ -534,30 +549,21 @@ export default function StoreScreen() {
     throw lastError ?? new Error('Could not load store articles');
   }, [apiBaseUrl, cleanSlug, fetchJson]);
 
-  const fetchStorePages = useCallback(async (): Promise<CollectionResponse<Page>> => {
-    const baseQueries = [
-      `${apiBaseUrl}/api/pages?filter[store][slug]=${encodeURIComponent(cleanSlug)}`,
-      `${apiBaseUrl}/api/pages?filter[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filter[store][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filters[store][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filter[stores][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filter[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filters[stores][slug]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=menuOrder:asc&pagination[pageSize]=12`,
-      `${apiBaseUrl}/api/pages?filters[store][slug]=${encodeURIComponent(cleanSlug)}`,
-      `${apiBaseUrl}/api/pages?filter[stores][slug]=${encodeURIComponent(cleanSlug)}`,
-      `${apiBaseUrl}/api/pages?filters[stores][slug]=${encodeURIComponent(cleanSlug)}`,
+  const fetchStorePages = useCallback(async (resolvedStoreId?: string): Promise<CollectionResponse<Page>> => {
+    const encoded = encodeURIComponent(cleanSlug);
+    const attempts = [
+      `${apiBaseUrl}/api/pages?filters[store][slug][$eq]=${encoded}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
+      `${apiBaseUrl}/api/pages?filters[store][slug]=${encoded}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
+      `${apiBaseUrl}/api/pages?filter[store][slug][$eq]=${encoded}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
+      `${apiBaseUrl}/api/pages?filter[store][slug]=${encoded}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
     ];
 
-    const attempts = baseQueries.flatMap((base) => [
-      base,
-      `${base}&populate[]=SEO.socialImage&populate[]=store&populate[]=stores`,
-      `${base}&populate[]=seo.socialImage&populate[]=store&populate[]=stores`,
-      `${base}&populate[SEO][populate][socialImage]=*`,
-      `${base}&populate[seo][populate][socialImage]=*`,
-      `${base}&populate=*`,
-    ]);
+    if (resolvedStoreId) {
+      attempts.unshift(
+        `${apiBaseUrl}/api/pages?filters[store][id][$eq]=${encodeURIComponent(resolvedStoreId)}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
+        `${apiBaseUrl}/api/pages?filter[store][id][$eq]=${encodeURIComponent(resolvedStoreId)}&pagination[pageSize]=12&populate[]=SEO.socialImage`,
+      );
+    }
 
     let lastError: Error | null = null;
 
@@ -582,26 +588,30 @@ export default function StoreScreen() {
     setPagesError(null);
 
     try {
-      const [storeInfoResult, articlesResult, productsResult, pagesResult] = await Promise.allSettled([
-        fetchStoreInfo(),
+      const storeInfoResult = await fetchStoreInfo();
+      const resolvedStore = storeInfoResult.data?.[0] ?? null;
+      const resolvedStoreId = typeof resolvedStore?.id === 'number' ? String(resolvedStore.id) : '';
+
+      setStore(resolvedStore);
+
+      const [articlesResult, productsResult, pagesResult] = await Promise.allSettled([
         fetchStoreArticles(),
         fetchJson<CollectionResponse<Product>>(
           `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
         ),
-        fetchStorePages(),
+        fetchStorePages(resolvedStoreId),
       ]);
-
-      if (storeInfoResult.status !== 'fulfilled') {
-        throw new Error('Could not load store details');
-      }
-
-      setStore(storeInfoResult.value.data?.[0] ?? null);
       if (articlesResult.status === 'fulfilled') {
         const rawArticles = articlesResult.value.data ?? [];
-        const strictArticles = hasArticleOwnershipSignals(rawArticles)
-          ? rawArticles.filter((entry) => articleBelongsToStore(entry, cleanSlug))
-          : rawArticles;
-        setArticles(strictArticles);
+        const hasSignals = hasArticleOwnershipSignals(rawArticles);
+
+        if (!hasSignals && rawArticles.length > 0) {
+          setArticles([]);
+          setArticlesError('Unscoped articles response: missing store relation in payload');
+        } else {
+          const strictArticles = rawArticles.filter((entry) => articleBelongsToStore(entry, cleanSlug));
+          setArticles(strictArticles);
+        }
       } else {
         setArticles([]);
         setArticlesError(extractSettledError(articlesResult, 'Could not load blog posts'));
@@ -616,10 +626,14 @@ export default function StoreScreen() {
 
       if (pagesResult.status === 'fulfilled') {
         const rawPages = pagesResult.value.data ?? [];
-        const scopedPages = hasPageOwnershipSignals(rawPages)
-          ? rawPages.filter((entry) => pageBelongsToStore(entry, cleanSlug))
-          : rawPages;
-        setPages(scopedPages.filter((entry) => entry.Active !== false && entry.active !== false));
+        const visiblePages = rawPages.filter((entry) => entry.Active !== false && entry.active !== false);
+        const hasSignals = hasPageOwnershipSignals(visiblePages);
+        const scopedPages = hasSignals
+          ? visiblePages.filter((entry) => pageBelongsToStore(entry, cleanSlug))
+          : visiblePages;
+
+        setPages(sortPagesByTitle(scopedPages));
+        setPagesError(null);
       } else {
         setPages([]);
         setPagesError(extractSettledError(pagesResult, 'Could not load pages'));
@@ -636,6 +650,10 @@ export default function StoreScreen() {
   }, [load]);
 
   const storeTitle = useMemo(() => titleFromStore(store, cleanSlug), [store, cleanSlug]);
+  const storeId = useMemo(() => {
+    if (typeof store?.id === 'number') return String(store.id);
+    return '';
+  }, [store?.id]);
   const storeLogo = useMemo(() => resolveStoreLogo(store), [store]);
   const storefrontUrl = useMemo(() => getStorefrontUrl(displayBaseUrl, cleanSlug), [displayBaseUrl, cleanSlug]);
   const storeLinks = useMemo(() => (store?.URLS ?? []).filter((item) => getUrl(item)), [store?.URLS]);
@@ -663,11 +681,12 @@ export default function StoreScreen() {
         params: {
           slug: articleSlug,
           store: cleanSlug,
+          storeId,
           title: articleTitle || 'Article',
         },
       } as never);
     },
-    [cleanSlug, openItemInWebView, router]
+    [cleanSlug, openItemInWebView, router, storeId]
   );
 
   const openPage = useCallback(
@@ -682,11 +701,12 @@ export default function StoreScreen() {
         params: {
           slug: pageSlug,
           store: cleanSlug,
+          storeId,
           title: pageTitle || 'Page',
         },
       } as never);
     },
-    [cleanSlug, openItemInWebView, router]
+    [cleanSlug, openItemInWebView, router, storeId]
   );
 
   const openBlogArchive = useCallback(() => {

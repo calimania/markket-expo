@@ -42,6 +42,7 @@ export default function SettingsScreen() {
   const [slugInput, setSlugInput] = useState(defaultStoreSlug);
   const [contentSlugInput, setContentSlugInput] = useState(contentStoreSlug);
   const [openModeInput, setOpenModeInput] = useState<LinkOpenMode>(linkOpenMode);
+  const displayModeInput: 'match-device' | 'dark' = 'match-device';
   const [queryInput, setQueryInput] = useState(storesQuery);
   const [saved, setSaved] = useState(false);
 
@@ -172,6 +173,33 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+          <View style={styles.group}>
+            <ThemedText type="defaultSemiBold">Display Mode</ThemedText>
+            <View style={styles.modeRow}>
+              <Pressable
+                disabled
+                style={[
+                  styles.modeButton,
+                  styles.modeButtonDisabled,
+                  displayModeInput === 'match-device' && styles.modeButtonActive,
+                ]}>
+                <ThemedText style={styles.modeButtonText}>Match Device</ThemedText>
+              </Pressable>
+              <Pressable
+                disabled
+                style={[
+                  styles.modeButton,
+                  styles.modeButtonDisabled,
+                  displayModeInput === 'dark' && styles.modeButtonActive,
+                ]}>
+                <ThemedText style={styles.modeButtonText}>Dark</ThemedText>
+              </Pressable>
+            </View>
+            <ThemedText style={styles.inlineHint}>
+              Disabled for now. App is temporarily forced to bright mode while we tune dark mode styles.
+            </ThemedText>
+          </View>
+
       <View style={styles.group}>
         <ThemedText type="defaultSemiBold">Stores Query String</ThemedText>
         <TextInput
@@ -297,6 +325,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
+  },
+  modeButtonDisabled: {
+    opacity: 0.5,
   },
   modeButtonActive: {
     borderColor: '#D946EF',
