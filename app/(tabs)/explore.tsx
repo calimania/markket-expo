@@ -243,6 +243,11 @@ export default function SettingsScreen() {
               <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/profile' as never)}>
                 <ThemedText>Profile & Session</ThemedText>
               </Pressable>
+              {__DEV__ ? (
+                <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/(dev)/design-system' as never)}>
+                  <ThemedText>Design System</ThemedText>
+                </Pressable>
+              ) : null}
             </View>
             <ThemedText style={styles.inlineHint}>
               Use this to capture magic-login sessions from WebView and test native API auth.

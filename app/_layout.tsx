@@ -23,6 +23,11 @@ export default function RootLayout() {
     Manrope: require('@/assets/fonts/Manrope-VariableFont_wght.ttf'),
     Newsreader: require('@/assets/fonts/Newsreader-VariableFont_opsz,wght.ttf'),
     RobotoMono: require('@/assets/fonts/RobotoMono-VariableFont_wght.ttf'),
+    SpaceGrotesk: require('@/assets/fonts/SpaceGrotesk-VariableFont_wght.ttf'),
+    ComicMono: require('@/assets/fonts/ComicMono.ttf'),
+    ComicMonoBold: require('@/assets/fonts/ComicMono-Bold.ttf'),
+    GilroyBold: require('@/assets/fonts/Gilroy-Bold.ttf'),
+    GilroyBlack: require('@/assets/fonts/Gilroy-Black.ttf'),
   });
 
   useEffect(() => {
@@ -67,6 +72,7 @@ export default function RootLayout() {
             <Stack.Screen name="page/[slug]" options={{ title: 'Page' }} />
             <Stack.Screen name="legal/[kind]" options={{ title: 'Legal' }} />
             <Stack.Screen name="profile" options={{ title: 'Profile' }} />
+            <Stack.Screen name="(dev)/design-system" options={{ title: 'Design System' }} />
             <Stack.Screen
               name="store/[slug]"
               options={{
