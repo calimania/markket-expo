@@ -1,11 +1,15 @@
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Image } from 'expo-image';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type ReactNode } from 'react';
 import { WebView } from 'react-native-webview';
 import {
   ActivityIndicator,
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,6 +20,8 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 type InlineNode = {
   type?: string;
@@ -41,6 +47,8 @@ type PageRecord = {
   slug?: string;
   title?: string;
   Title?: string;
+  Active?: boolean;
+  active?: boolean;
   content?: BlockNode[];
   Content?: BlockNode[];
   SEO?: {
@@ -58,6 +66,8 @@ type PageRecord = {
     slug?: string;
   } | null;
 };
+
+const ABOUT_PAGE_HIDDEN_SLUGS = new Set(['home', 'about', 'blog', 'products']);
 
 type CollectionResponse<T> = {
   data?: T[];
@@ -141,6 +151,17 @@ function inlineText(nodes?: InlineNode[]): string {
     .trim();
 }
 
+function firstBlockPreview(blocks: BlockNode[]): string {
+  for (const block of blocks) {
+    const text = inlineText(block.children);
+    if (text) {
+      return text.length > 130 ? `${text.slice(0, 127)}...` : text;
+    }
+  }
+
+  return 'No preview available yet.';
+}
+
 function extractUrlsFromNodes(nodes?: InlineNode[]): string[] {
   if (!nodes?.length) return [];
 
@@ -220,22 +241,51 @@ function getEmbedUrl(url: string): string {
 }
 
 export default function PageScreen() {
+  const router = useRouter();
   const { apiBaseUrl, ready } = useAppConfig();
-  const { slug, store, storeId, title } = useLocalSearchParams<{
+  const { slug, store, storeId, storeDocumentId, title } = useLocalSearchParams<{
     slug?: string | string[];
     store?: string | string[];
     storeId?: string | string[];
+    storeDocumentId?: string | string[];
     title?: string | string[];
   }>();
 
   const pageSlug = normalizeParam(slug).trim();
   const storeSlug = normalizeParam(store).trim();
   const storeIdValue = normalizeParam(storeId).trim();
+  const storeDocumentIdValue = normalizeParam(storeDocumentId).trim();
   const titleFallback = cleanText(normalizeParam(title)) || 'Page';
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<PageRecord | null>(null);
+  const [relatedPages, setRelatedPages] = useState<PageRecord[]>([]);
+  const [relatedPagesError, setRelatedPagesError] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [showThanks, setShowThanks] = useState(false);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollViewRef = useRef<import('react-native').ScrollView>(null);
+
+  const isAboutPage = pageSlug.toLocaleLowerCase() === 'about';
+  const isNewsletterPage = pageSlug.toLocaleLowerCase() === 'newsletter';
+
+  useEffect(() => {
+    if (!isNewsletterPage) return;
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    });
+    return () => sub.remove();
+  }, [isNewsletterPage]);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
 
   const openExternalUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {
@@ -433,21 +483,76 @@ export default function PageScreen() {
     throw new Error('Page not found for this store');
   }, [apiBaseUrl, pageSlug, storeIdValue, storeSlug]);
 
+  const fetchRelatedStorePages = useCallback(async (): Promise<PageRecord[]> => {
+    if (!storeSlug && !storeIdValue) return [];
+
+    const urls: string[] = [];
+    const addRequest = (builder: (params: URLSearchParams) => void) => {
+      const params = new URLSearchParams();
+      params.set('pagination[pageSize]', '40');
+      params.set('sort[0]', 'title:asc');
+      params.append('populate[]', 'SEO.socialImage');
+      params.append('populate[]', 'store');
+      builder(params);
+      urls.push(`${apiBaseUrl}/api/pages?${params.toString()}`);
+    };
+
+    if (storeSlug) {
+      addRequest((params) => params.set('filters[store][slug][$eq]', storeSlug));
+      addRequest((params) => params.set('filters[store][slug]', storeSlug));
+      addRequest((params) => params.set('filter[store][slug][$eq]', storeSlug));
+      addRequest((params) => params.set('filter[store][slug]', storeSlug));
+    }
+
+    if (storeIdValue) {
+      addRequest((params) => params.set('filters[store][id][$eq]', storeIdValue));
+      addRequest((params) => params.set('filters[store][id]', storeIdValue));
+      addRequest((params) => params.set('filter[store][id][$eq]', storeIdValue));
+      addRequest((params) => params.set('filter[store][id]', storeIdValue));
+    }
+
+    for (const url of urls) {
+      const response = await fetch(url);
+      if (!response.ok) continue;
+
+      const payload = (await response.json()) as CollectionResponse<PageRecord>;
+      const rows = Array.isArray(payload.data) ? payload.data : [];
+      if (!rows.length) continue;
+
+      return rows.filter((entry) => pageMatchesStore(entry, storeSlug, storeIdValue));
+    }
+
+    return [];
+  }, [apiBaseUrl, storeIdValue, storeSlug]);
+
   const load = useCallback(async () => {
     if (!ready || !pageSlug) return;
 
     setLoading(true);
     setError(null);
+    setRelatedPagesError(null);
 
     try {
       const result = await fetchPage();
       setPage(result);
+
+      if (isAboutPage) {
+        try {
+          const pagesResult = await fetchRelatedStorePages();
+          setRelatedPages(pagesResult);
+        } catch (pagesErr) {
+          setRelatedPages([]);
+          setRelatedPagesError(pagesErr instanceof Error ? pagesErr.message : 'Could not load related pages');
+        }
+      } else {
+        setRelatedPages([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error');
     } finally {
       setLoading(false);
     }
-  }, [fetchPage, pageSlug, ready]);
+  }, [fetchPage, fetchRelatedStorePages, isAboutPage, pageSlug, ready]);
 
   useEffect(() => {
     load();
@@ -456,6 +561,87 @@ export default function PageScreen() {
   const blocks = useMemo(() => resolveBlocks(page), [page]);
   const coverUrl = useMemo(() => resolveCoverUrl(page), [page]);
   const screenTitle = useMemo(() => resolveTitle(page, titleFallback), [page, titleFallback]);
+  const aboutLinkedPages = useMemo(() => {
+    if (!isAboutPage) return [];
+
+    return relatedPages
+      .filter((item) => {
+        const slugValue = cleanText(item.slug || '').toLocaleLowerCase();
+        if (!slugValue || ABOUT_PAGE_HIDDEN_SLUGS.has(slugValue)) return false;
+        if (item.Active === false || item.active === false) return false;
+        return true;
+      })
+      .sort((a, b) => resolveTitle(a, '').localeCompare(resolveTitle(b, '')));
+  }, [isAboutPage, relatedPages]);
+
+  const openRelatedPage = useCallback(
+    (item: PageRecord) => {
+      const itemSlug = cleanText(item.slug || '');
+      if (!itemSlug) return;
+
+      router.push({
+        pathname: '/page/[slug]',
+        params: {
+          slug: itemSlug,
+          store: storeSlug,
+          storeId: storeIdValue,
+          storeDocumentId: storeDocumentIdValue,
+          title: resolveTitle(item, 'Page'),
+        },
+      } as never);
+    },
+    [router, storeDocumentIdValue, storeIdValue, storeSlug]
+  );
+
+  const submitNewsletter = useCallback(async () => {
+    const normalizedEmail = cleanText(email).toLocaleLowerCase();
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      Alert.alert('Enter a valid email', 'Please add a valid email address to subscribe.');
+      return;
+    }
+
+    const storeReference = cleanText(storeDocumentIdValue || storeIdValue || '');
+    setSubmitting(true);
+
+    try {
+      const payload: { data: { Email: string; stores?: string[] } } = {
+        data: {
+          Email: normalizedEmail,
+        },
+      };
+
+      if (storeReference) {
+        payload.data.stores = [storeReference];
+      }
+
+      const response = await fetch('https://api.markket.place/api/subscribers/subscribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Subscribe failed (${response.status})`);
+      }
+
+      setShowThanks(true);
+      setEmail('');
+
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+
+      redirectTimerRef.current = setTimeout(() => {
+        router.back();
+      }, 700);
+    } catch {
+      Alert.alert('Could not subscribe', 'Please try again in a moment.');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [email, router, storeDocumentIdValue, storeIdValue]);
 
   if (!pageSlug) {
     return (
@@ -494,7 +680,16 @@ export default function PageScreen() {
         }}
       />
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={110}>
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag">
         {coverUrl ? (
           <Image
             source={{ uri: coverUrl }}
@@ -575,7 +770,84 @@ export default function PageScreen() {
         ) : (
           <ThemedText style={styles.paragraph}>No structured page content available yet.</ThemedText>
         )}
+
+          {isNewsletterPage ? (
+            <View style={styles.subscribeCard}>
+              <View style={styles.subscribeHero}>
+                <View style={styles.subscribeBlob1} />
+                <View style={styles.subscribeBlob2} />
+                <View style={styles.subscribeBlob3} />
+                <Text style={styles.subscribeHeroEmoji}>✉</Text>
+                <Text style={styles.subscribeKicker}>NEWSLETTER</Text>
+              </View>
+              <View style={styles.subscribeContent}>
+                <ThemedText type="defaultSemiBold" style={styles.subscribeTitle}>
+                  Subscribe to updates
+                </ThemedText>
+                <ThemedText style={styles.subscribeBody}>
+                  Get announcements, product drops, and event alerts by email.
+                </ThemedText>
+                <Input
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="you@example.com"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!submitting}
+                />
+                <Button
+                  label={submitting ? 'Submitting...' : 'Subscribe'}
+                  onPress={submitNewsletter}
+                  disabled={submitting}
+                />
+              </View>
+              <View style={styles.subscribeTrust}>
+                <View style={styles.subscribeTrustDot} />
+                <ThemedText style={styles.subscribeTrustText}>No spam, ever. Unsubscribe anytime.</ThemedText>
+                <View style={styles.subscribeTrustDot} />
+              </View>
+            </View>
+          ) : null}
+
+          {isAboutPage ? (
+            <View style={styles.relatedSection}>
+              <ThemedText type="defaultSemiBold" style={styles.relatedTitle}>
+                More Pages
+              </ThemedText>
+              {aboutLinkedPages.length ? (
+                aboutLinkedPages.map((item, index) => {
+                  const itemSlug = cleanText(item.slug || '');
+                  const itemTitle = resolveTitle(item, 'Page');
+                  const itemPreview = firstBlockPreview(resolveBlocks(item));
+
+                  return (
+                    <Pressable
+                      key={`${(item.id ?? itemSlug) || 'related'}-${index}`}
+                      style={({ pressed }) => [styles.relatedCard, pressed && styles.relatedCardPressed]}
+                      onPress={() => openRelatedPage(item)}>
+                      <ThemedText style={styles.relatedCardTitle}>{itemTitle}</ThemedText>
+                      <ThemedText style={styles.relatedCardMeta}>/{itemSlug}</ThemedText>
+                      <ThemedText style={styles.relatedCardBody}>{itemPreview}</ThemedText>
+                    </Pressable>
+                  );
+                })
+              ) : (
+                <ThemedText style={styles.relatedEmpty}>No additional pages available.</ThemedText>
+              )}
+              {relatedPagesError ? <ThemedText style={styles.relatedError}>{relatedPagesError}</ThemedText> : null}
+            </View>
+          ) : null}
       </ScrollView>
+
+        {showThanks ? (
+          <View pointerEvents="none" style={styles.toastWrap}>
+            <View style={styles.toastCard}>
+              <ThemedText style={styles.toastText}>Thank you for subscribing!</ThemedText>
+            </View>
+          </View>
+        ) : null}
+      </KeyboardAvoidingView>
     </ThemedView>
   );
 }
@@ -609,10 +881,13 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  flex: {
+    flex: 1,
+  },
   content: {
     paddingHorizontal: 18,
     paddingTop: 22,
-    paddingBottom: 36,
+    paddingBottom: 120,
     gap: 12,
   },
   coverImage: {
@@ -643,6 +918,190 @@ const styles = StyleSheet.create({
   },
   paragraphWrap: {
     gap: 10,
+  },
+  subscribeCard: {
+    marginTop: 10,
+    marginBottom: 8,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(8,145,178,0.34)',
+    backgroundColor: 'rgba(239,246,255,0.95)',
+    overflow: 'hidden',
+  },
+  subscribeHero: {
+    backgroundColor: '#0E7490',
+    paddingVertical: 32,
+    alignItems: 'center',
+    gap: 5,
+    overflow: 'hidden',
+  },
+  subscribeBlob1: {
+    position: 'absolute',
+    width: 160,
+    height: 160,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    top: -70,
+    right: -30,
+  },
+  subscribeBlob2: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    bottom: -50,
+    left: 10,
+  },
+  subscribeBlob3: {
+    position: 'absolute',
+    width: 70,
+    height: 70,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    top: 10,
+    left: '40%',
+  },
+  subscribeHeroEmoji: {
+    fontSize: 34,
+    color: '#fff',
+    zIndex: 1,
+  },
+  subscribeKicker: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.75)',
+    letterSpacing: 1.2,
+    zIndex: 1,
+  },
+  subscribeContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 0,
+    gap: 12,
+  },
+  subscribeTrust: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(8,145,178,0.15)',
+    backgroundColor: 'rgba(8,145,178,0.05)',
+  },
+  subscribeTrustDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8,145,178,0.45)',
+  },
+  subscribeTrustText: {
+    fontSize: 11,
+    opacity: 0.65,
+    letterSpacing: 0.2,
+  },
+  subscribeTitle: {
+    fontSize: 18,
+    lineHeight: 23,
+  },
+  subscribeBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    opacity: 0.78,
+  },
+  emailInput: {
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.35)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    backgroundColor: '#fff',
+  },
+  subscribeButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    backgroundColor: '#0891B2',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  subscribeButtonPressed: {
+    opacity: 0.86,
+  },
+  subscribeButtonDisabled: {
+    opacity: 0.55,
+  },
+  subscribeButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  toastWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 28,
+    alignItems: 'center',
+  },
+  toastCard: {
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(6,95,70,0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.65)',
+  },
+  toastText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.25,
+  },
+  relatedSection: {
+    marginTop: 8,
+    gap: 10,
+  },
+  relatedTitle: {
+    fontSize: 18,
+    lineHeight: 23,
+  },
+  relatedCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.7)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 5,
+  },
+  relatedCardPressed: {
+    opacity: 0.8,
+  },
+  relatedCardTitle: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  relatedCardMeta: {
+    fontSize: 11,
+    opacity: 0.62,
+  },
+  relatedCardBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    opacity: 0.82,
+  },
+  relatedEmpty: {
+    fontSize: 13,
+    opacity: 0.68,
+  },
+  relatedError: {
+    fontSize: 12,
+    color: '#B42318',
   },
   h1: {
     fontSize: 30,

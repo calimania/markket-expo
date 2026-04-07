@@ -67,6 +67,15 @@ type Article = {
     };
   } | null;
   store?: { slug?: string; title?: string } | null;
+  SEO?: {
+    socialImage?: {
+      url?: string;
+      formats?: {
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    } | null;
+  } | null;
 };
 
 type ArticlesApiResponse = {
@@ -80,6 +89,7 @@ type Product = {
   updatedAt?: string;
   PRICES?: Array<{ price?: number; currency?: string }>;
   SEO?: {
+    metaUrl?: string | null;
     socialImage?: {
       url?: string;
       formats?: {
@@ -93,6 +103,40 @@ type Product = {
 
 type ProductsApiResponse = {
   data: Product[];
+};
+
+type Event = {
+  id: number;
+  slug?: string;
+  Name?: string;
+  Description?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  usd_price?: number | null;
+  maxCapacity?: number | null;
+  PRICES?: Array<{ price?: number; currency?: string }> | null;
+  Thumbnail?: {
+    url?: string;
+    formats?: {
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  SEO?: {
+    metaUrl?: string | null;
+    socialImage?: {
+      url?: string;
+      formats?: {
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    } | null;
+  } | null;
+  stores?: Array<{ slug?: string; title?: string }> | null;
+};
+
+type EventsApiResponse = {
+  data: Event[];
 };
 
 type Page = {
@@ -167,6 +211,17 @@ function getTintColors(storeId: number): { top: string; bottom: string } {
   ];
 
   return palette[storeId % palette.length];
+}
+
+function getThumbnailUrl(image: { url?: string; formats?: { small?: { url?: string }; thumbnail?: { url?: string } } } | null): string | null {
+  if (!image) return null;
+  return image.formats?.small?.url ?? image.formats?.thumbnail?.url ?? image.url ?? null;
+}
+
+function formatEventDate(dateStr?: string | null): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function HomeScreen() {
@@ -256,7 +311,7 @@ export default function HomeScreen() {
 
   const featuredStore = activeSortedStores[0] ?? null;
   const thumbStores = activeSortedStores.slice(1, 9);
-  const listStores = stores.slice(1);
+  const listStores = stores;
 
   const [articles, setArticles] = useState<Article[]>([]);
   const [articlesLoading, setArticlesLoading] = useState(true);
@@ -315,11 +370,41 @@ export default function HomeScreen() {
       .finally(() => setPagesLoading(false));
   }, [apiBaseUrl, ready]);
 
+  const [events, setEvents] = useState<Event[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
+
+  useEffect(() => {
+    if (!ready) return;
+    setEventsLoading(true);
+    // Show events from yesterday onward so today's events still appear
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const since = yesterday.toISOString().slice(0, 10); // YYYY-MM-DD, no colons
+    const url = `/api/events?sort[0]=startDate:asc&filters[startDate][$gte]=${since}&populate[]=PRICES&populate[]=SEO&populate[]=stores&populate[]=Thumbnail&pagination[pageSize]=10`;
+    console.log('[events] fetching', { url, apiBaseUrl });
+    apiGet<EventsApiResponse>(url, { baseUrl: apiBaseUrl })
+      .then((result) => {
+        if (result.ok && result.data?.data) {
+          console.log('[events] loaded', result.data.data.length, 'events');
+          setEvents(result.data.data);
+        } else {
+          console.warn('[events] bad result', result);
+          setEvents([]);
+        }
+      })
+      .catch((err) => {
+        console.error('[events] fetch error', err);
+        setEvents([]);
+      })
+      .finally(() => setEventsLoading(false));
+  }, [apiBaseUrl, ready]);
+
   // Debounce loading states to avoid flashing skeletons on quick loads (>400ms)
   const [debouncedActiveStoresLoading, setDebouncedActiveStoresLoading] = useState(true);
   const [debouncedArticlesLoading, setDebouncedArticlesLoading] = useState(true);
   const [debouncedProductsLoading, setDebouncedProductsLoading] = useState(true);
   const [debouncedPagesLoading, setDebouncedPagesLoading] = useState(true);
+  const [debouncedEventsLoading, setDebouncedEventsLoading] = useState(true);
 
   useEffect(() => {
     if (!activeStoresLoading) {
@@ -356,6 +441,15 @@ export default function HomeScreen() {
     const timer = setTimeout(() => setDebouncedPagesLoading(true), 400);
     return () => clearTimeout(timer);
   }, [pagesLoading]);
+
+  useEffect(() => {
+    if (!eventsLoading) {
+      setDebouncedEventsLoading(false);
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedEventsLoading(true), 400);
+    return () => clearTimeout(timer);
+  }, [eventsLoading]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -634,9 +728,8 @@ export default function HomeScreen() {
                   contentContainerStyle={styles.carouselContent}>
                   {articles.map((article) => {
                     const coverUrl =
-                      article.cover?.formats?.small?.url ??
-                      article.cover?.formats?.thumbnail?.url ??
-                      article.cover?.url ?? null;
+                      getThumbnailUrl(article.cover ?? null) ??
+                      getThumbnailUrl(article.SEO?.socialImage ?? null) ?? null;
                     return (
                       <Pressable
                         key={article.id}
@@ -731,6 +824,8 @@ export default function HomeScreen() {
                           <ThemedText style={styles.productPrice}>
                             ${firstPrice.price.toFixed(2)}
                           </ThemedText>
+                        ) : product.SEO?.metaUrl ? (
+                          <ThemedText style={styles.metaUrlLink} numberOfLines={1}>more info →</ThemedText>
                         ) : null}
                       </Pressable>
                     );
@@ -763,10 +858,7 @@ export default function HomeScreen() {
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.carouselContent}>
                   {pages.map((page) => {
-                    const imgUrl =
-                      page.SEO?.socialImage?.formats?.small?.url ??
-                      page.SEO?.socialImage?.formats?.thumbnail?.url ??
-                      page.SEO?.socialImage?.url ?? null;
+                    const imgUrl = getThumbnailUrl(page.SEO?.socialImage ?? null) ?? null;
                     return (
                       <Pressable
                         key={page.id}
@@ -793,6 +885,90 @@ export default function HomeScreen() {
                         <ThemedText numberOfLines={2} style={styles.articleTitle}>
                           {page.Title ?? 'Page'}
                         </ThemedText>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
+            </View>
+
+            <View style={styles.carouselSection}>
+              <View style={styles.carouselHeader}>
+                <ThemedText type="label" style={styles.carouselLabel}>Upcoming Events</ThemedText>
+                <ThemedText type="mono" style={styles.carouselMeta}>sorted by date</ThemedText>
+              </View>
+              {debouncedEventsLoading ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.carouselContent}>
+                  {[0, 1, 2, 3].map((i) => (
+                    <View key={i} style={styles.articleSkeleton}>
+                      <SkeletonBlock height={120} radius={16} />
+                      <SkeletonBlock width="70%" height={14} radius={8} />
+                      <SkeletonBlock width="50%" height={14} radius={8} />
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : events.length === 0 ? null : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.carouselContent}>
+                  {events.map((event) => {
+                    const imgUrl =
+                      getThumbnailUrl(event.Thumbnail ?? null) ??
+                      getThumbnailUrl(event.SEO?.socialImage ?? null);
+                    const firstStore = event.stores?.[0];
+                    const firstPrice = event.PRICES?.[0];
+                    const isFree = !event.usd_price && (!firstPrice?.price || firstPrice.price === 0);
+                    const hasMetaUrl = !!event.SEO?.metaUrl;
+                    return (
+                      <Pressable
+                        key={event.id}
+                        style={({ pressed }) => [styles.eventCard, pressed && styles.cardPressed]}
+                        onPress={() =>
+                          event.slug
+                            ? router.push({ pathname: '/event/[slug]', params: { slug: event.slug } } as never)
+                            : hasMetaUrl
+                              ? openUrlChoice(event.SEO!.metaUrl!, event.Name || 'Event')
+                              : null
+                        }>
+                        <View style={styles.eventCover}>
+                          {imgUrl ? (
+                            <Image source={{ uri: imgUrl }} style={styles.eventCoverImage} contentFit="cover" transition={200} />
+                          ) : (
+                            <View style={[styles.eventCoverImage, styles.eventCoverFallback]}>
+                              <ThemedText style={styles.productFallbackEmoji}>📅</ThemedText>
+                            </View>
+                          )}
+                          {event.startDate ? (
+                            <View style={styles.eventDateBadge}>
+                              <ThemedText style={styles.eventDateText} numberOfLines={1}>
+                                {formatEventDate(event.startDate)}
+                              </ThemedText>
+                            </View>
+                          ) : null}
+                        </View>
+                        <ThemedText numberOfLines={2} style={styles.articleTitle}>
+                          {event.Name ?? 'Event'}
+                        </ThemedText>
+                        {firstStore?.title ? (
+                          <ThemedText style={styles.articleStoreBadgeText} numberOfLines={1}>
+                            {firstStore.title}
+                          </ThemedText>
+                        ) : null}
+                        {isFree ? (
+                          <ThemedText style={styles.eventFreeTag}>Free</ThemedText>
+                        ) : event.usd_price ? (
+                          <ThemedText style={styles.productPrice}>${event.usd_price}</ThemedText>
+                        ) : firstPrice?.price != null ? (
+                          <ThemedText style={styles.productPrice}>
+                            ${firstPrice.price.toFixed(2)}
+                          </ThemedText>
+                        ) : hasMetaUrl ? (
+                          <ThemedText style={styles.metaUrlLink}>more info →</ThemedText>
+                        ) : null}
                       </Pressable>
                     );
                   })}
@@ -1035,6 +1211,53 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
     color: BrandColors.primary,
+  },
+  metaUrlLink: {
+    fontSize: 12,
+    color: BrandColors.primary,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  eventCard: {
+    width: 160,
+    marginRight: Spacing.sm,
+  },
+  eventCover: {
+    width: 160,
+    height: 110,
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: Spacing.xs,
+    position: 'relative',
+  },
+  eventCoverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  eventCoverFallback: {
+    backgroundColor: '#F5ECFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  eventDateBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  eventDateText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  eventFreeTag: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2a9d4e',
+    marginTop: 2,
   },
   loadingMoreRow: {
     marginTop: 6,
