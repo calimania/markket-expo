@@ -5,7 +5,9 @@ import { ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { useAuthSession } from '@/hooks/use-auth-session';
 import { apiPost, type ApiResult } from '@/lib/api';
+import { getReceiptViewerKey, saveLocalReceipt } from '@/lib/receipt-history';
 
 type ReceiptResponse = {
   data?: {
@@ -55,6 +57,7 @@ function buildAddress(address?: {
 
 export default function ReceiptScreen() {
   const { apiBaseUrl } = useAppConfig();
+  const { session } = useAuthSession();
   const { storeSlug, session_id } = useLocalSearchParams<{
     storeSlug?: string | string[];
     session_id?: string | string[];
@@ -100,9 +103,24 @@ export default function ReceiptScreen() {
       }
 
       const response = result.data?.data?.link?.response;
+      const amountTotalCents = typeof response?.amount_total === 'number' ? response.amount_total : undefined;
       const amount = typeof response?.amount_total === 'number' ? (response.amount_total / 100).toFixed(2) : '';
       const email = response?.customer_details?.email ?? '';
       const address = buildAddress(response?.shipping_details?.address);
+
+      const viewerKey = getReceiptViewerKey({
+        userId: session?.userId,
+        email: session?.email,
+        token: session?.token,
+      });
+
+      await saveLocalReceipt(viewerKey, {
+        sessionId,
+        storeSlug: cleanStoreSlug || undefined,
+        amountTotalCents,
+        customerEmail: email || undefined,
+        createdAt: new Date().toISOString(),
+      });
 
       setTotalAmount(amount);
       setCustomerEmail(email);
@@ -115,7 +133,7 @@ export default function ReceiptScreen() {
     return () => {
       active = false;
     };
-  }, [apiBaseUrl, sessionId]);
+  }, [apiBaseUrl, cleanStoreSlug, session?.email, session?.token, session?.userId, sessionId]);
 
   const title = useMemo(() => `Receipt${cleanStoreSlug ? ` · ${cleanStoreSlug}` : ''}`, [cleanStoreSlug]);
 

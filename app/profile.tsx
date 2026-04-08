@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { useAppConfig } from '@/hooks/use-app-config';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { apiGet } from '@/lib/api';
+import { clearLocalReceipts, getLocalReceipts, getReceiptViewerKey, type LocalReceiptSummary } from '@/lib/receipt-history';
 
 type MeResponse = {
   id?: number;
@@ -62,6 +63,23 @@ function getInitials(value: string): string {
   return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
 }
 
+function formatLocalDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown date';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function maskSessionId(value: string): string {
+  const clean = cleanText(value);
+  if (clean.length <= 12) return clean;
+  return `${clean.slice(0, 6)}...${clean.slice(-6)}`;
+}
+
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -79,6 +97,7 @@ export default function ProfileScreen() {
   const [bioInput, setBioInput] = useState('');
   const [magicEmail, setMagicEmail] = useState('');
   const [magicStoreId, setMagicStoreId] = useState('');
+  const [recentOrders, setRecentOrders] = useState<LocalReceiptSummary[]>([]);
 
   const dashboardUrl = `${displayBaseUrl}dashboard/store`;
   const settingsUrl = `${displayBaseUrl}dashboard/settings`;
@@ -303,6 +322,29 @@ export default function ProfileScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLocalOrders() {
+      const viewerKey = getReceiptViewerKey({
+        userId: session?.userId,
+        email: session?.email,
+        token: session?.token,
+      });
+
+      const orders = await getLocalReceipts(viewerKey);
+      if (!cancelled) {
+        setRecentOrders(orders.slice(0, 8));
+      }
+    }
+
+    void loadLocalOrders();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.email, session?.token, session?.userId]);
+
   const saveProfile = async () => {
     if (!session?.token) {
       Alert.alert('Not signed in', 'Log in first to update your profile.');
@@ -356,6 +398,42 @@ export default function ProfileScreen() {
     } finally {
       setSavingProfile(false);
     }
+  };
+
+  const clearRecentOrders = () => {
+    Alert.alert('Clear local order history?', 'This only clears order memory on this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            const viewerKey = getReceiptViewerKey({
+              userId: session?.userId,
+              email: session?.email,
+              token: session?.token,
+            });
+            await clearLocalReceipts(viewerKey);
+            setRecentOrders([]);
+          })();
+        },
+      },
+    ]);
+  };
+
+  const openRecentOrder = (order: LocalReceiptSummary) => {
+    if (!order.storeSlug) {
+      Alert.alert('Store not found', 'This order is missing a store link.');
+      return;
+    }
+
+    router.push({
+      pathname: '/store/[storeSlug]/receipt',
+      params: {
+        storeSlug: order.storeSlug,
+        session_id: order.sessionId,
+      },
+    } as never);
   };
 
   const requestMagicLink = async () => {
@@ -512,6 +590,39 @@ export default function ProfileScreen() {
             )}
           </View>
         ) : null}
+
+        <View style={styles.card}>
+          <ThemedText type="defaultSemiBold">Recent Orders (This Device)</ThemedText>
+          <ThemedText style={styles.infoLine}>
+            Local order history saved on this device.
+          </ThemedText>
+
+          {recentOrders.length ? (
+            <View style={styles.profileSummaryWrap}>
+              {recentOrders.map((order) => (
+                <Pressable key={order.sessionId} style={styles.summaryChip} onPress={() => openRecentOrder(order)}>
+                  <ThemedText style={styles.summaryChipLabel}>Order</ThemedText>
+                  <ThemedText style={styles.summaryChipValue}>
+                    {order.amountTotalCents != null ? `$${(order.amountTotalCents / 100).toFixed(2)}` : 'Amount unavailable'}
+                  </ThemedText>
+                  <ThemedText style={styles.infoLine}>{formatLocalDate(order.createdAt)}</ThemedText>
+                  {order.storeSlug ? (
+                    <ThemedText style={styles.infoLine}>Store: {order.storeSlug}</ThemedText>
+                  ) : null}
+                  {order.customerEmail ? (
+                    <ThemedText style={styles.infoLine}>Email: {order.customerEmail}</ThemedText>
+                  ) : null}
+                  <ThemedText style={styles.infoLine}>Session: {maskSessionId(order.sessionId)}</ThemedText>
+                  <ThemedText style={styles.openReceiptHint}>Tap to open receipt</ThemedText>
+                </Pressable>
+              ))}
+            </View>
+          ) : (
+            <ThemedText style={styles.infoLine}>No local orders yet on this device.</ThemedText>
+          )}
+
+          <Button label="Clear Local Orders" variant="ghost" onPress={clearRecentOrders} />
+        </View>
 
         {!session?.token && showEmailMagicForm ? (
           <View style={styles.card}>
@@ -706,6 +817,12 @@ const styles = StyleSheet.create({
   summaryChipValue: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  openReceiptHint: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+    opacity: 0.65,
   },
   loader: {
     marginVertical: 4,

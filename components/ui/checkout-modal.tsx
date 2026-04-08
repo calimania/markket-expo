@@ -311,10 +311,10 @@ export default function CheckoutModal({ product, storeSlug, storeDocumentId, vis
         <View style={styles.footer}>
           <View style={styles.noticeCard}>
             <ThemedText style={styles.noticeText}>
-              You will be taken to your browser to complete this purchase securely.
+              Checkout opens in your browser.
             </ThemedText>
             <ThemedText style={styles.noticeSubtext}>
-              Your receipt and any follow-up notifications will be sent by email.
+              Receipt and updates will come by email.
             </ThemedText>
           </View>
 
