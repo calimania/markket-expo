@@ -26,7 +26,7 @@ type EventRecord = {
   maxCapacity?: number | null;
   amountSold?: number | null;
   active?: boolean;
-  PRICES?: Array<{ price?: number; currency?: string }> | null;
+  PRICES?: { price?: number; currency?: string }[] | null;
   Thumbnail?: {
     url?: string;
     formats?: {
@@ -48,7 +48,7 @@ type EventRecord = {
       };
     } | null;
   } | null;
-  stores?: Array<{ slug?: string; title?: string }> | null;
+  stores?: { slug?: string; title?: string }[] | null;
 };
 
 type EventsApiResponse = {

@@ -89,6 +89,35 @@ type Product = {
   Name?: string;
   updatedAt?: string;
   PRICES?: { price?: number; currency?: string }[];
+  prices?: { price?: number; currency?: string }[];
+  Thumbnail?: {
+    url?: string;
+    formats?: {
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  thumbnail?: {
+    url?: string;
+    formats?: {
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  Slides?: {
+    url?: string;
+    formats?: {
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[] | null;
+  slides?: {
+    url?: string;
+    formats?: {
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[] | null;
   SEO?: {
     metaUrl?: string | null;
     socialImage?: {
@@ -237,7 +266,7 @@ function formatEventDate(dateStr?: string | null): string {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { apiBaseUrl, displayBaseUrl, linkOpenMode, ready, storesQuery } = useAppConfig();
+  const { apiBaseUrl, linkOpenMode, ready, storesQuery } = useAppConfig();
   const insets = useSafeAreaInsets();
 
   const [stores, setStores] = useState<Store[]>([]);
@@ -355,7 +384,7 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!ready) return;
     setProductsLoading(true);
-    const url = `/api/products?sort[0]=updatedAt:desc&populate[]=PRICES&populate[]=SEO.socialImage&populate[]=stores&pagination[pageSize]=8`;
+    const url = `/api/products?sort[0]=updatedAt:desc&populate[]=PRICES&populate[]=SEO.socialImage&populate[]=Thumbnail&populate[]=Slides&populate[]=stores&pagination[pageSize]=8`;
     apiGet<ProductsApiResponse>(url, { baseUrl: apiBaseUrl })
       .then((result) => {
         if (result.ok && result.data?.data) {
@@ -848,19 +877,36 @@ export default function HomeScreen() {
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.carouselContent}>
                   {products.map((product) => {
+                    const firstSlide = product.Slides?.[0] ?? product.slides?.[0] ?? null;
                     const imgUrl =
+                      firstSlide?.formats?.small?.url ??
+                      firstSlide?.formats?.thumbnail?.url ??
+                      firstSlide?.url ??
+                      product.Thumbnail?.formats?.small?.url ??
+                      product.thumbnail?.formats?.small?.url ??
+                      product.Thumbnail?.formats?.thumbnail?.url ??
+                      product.thumbnail?.formats?.thumbnail?.url ??
+                      product.Thumbnail?.url ??
+                      product.thumbnail?.url ??
                       product.SEO?.socialImage?.formats?.small?.url ??
                       product.SEO?.socialImage?.formats?.thumbnail?.url ??
                       product.SEO?.socialImage?.url ?? null;
                     const firstStore = product.stores?.[0];
-                    const firstPrice = product.PRICES?.[0];
+                    const firstPrice = (product.PRICES ?? product.prices ?? [])[0];
                     return (
                       <Pressable
                         key={product.id}
                         style={({ pressed }) => [styles.productCard, pressed && styles.cardPressed]}
                         onPress={() =>
                           product.slug && firstStore?.slug
-                            ? openUrlChoice(`${displayBaseUrl}${firstStore.slug}/products/${product.slug}`, product.Name || 'Product')
+                            ? router.push({
+                              pathname: '/[storeSlug]/products/[slug]',
+                              params: {
+                                storeSlug: firstStore.slug,
+                                slug: product.slug,
+                                title: product.Name || 'Product',
+                              },
+                            } as never)
                             : null
                         }>
                         <View style={styles.productCover}>

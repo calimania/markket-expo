@@ -1,17 +1,8 @@
-# Markket Community App
+# Markket
 
-Markket is great. This app is a simple community-first mobile client to browse Markket stores and open each store directly in an in-app web view.
+Markkët ios client, discover new creators
 
 Built with Expo + React Native + Expo Router.
-
-## What It Does
-
-- Home tab shows a card list of stores from the Markket API.
-- Settings tab lets you change:
-  - API base URL (for your own Strapi/Markket instance)
-  - Display base URL (used when opening store pages)
-- Tapping a store opens a WebView at `displayBaseUrl + storeSlug`.
-- Settings are persisted locally with AsyncStorage.
 
 ## Default URLs
 

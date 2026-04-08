@@ -6,7 +6,7 @@ import { WebView } from 'react-native-webview';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
-import { useAuthSession, maskToken } from '@/hooks/use-auth-session';
+import { useAuthSession } from '@/hooks/use-auth-session';
 
 function normalizeParam(value: string | string[] | undefined): string {
   if (!value) return '';

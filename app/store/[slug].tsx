@@ -92,15 +92,56 @@ type Article = {
   }[];
 };
 
+type Price = {
+  id?: number;
+  STRIPE_ID?: string;
+  Price?: number;
+  price?: number;
+  Name?: string;
+  Currency?: string;
+  currency?: string;
+  Description?: string;
+  inventory?: number | null;
+  hidden?: boolean;
+  ships_to?: string[];
+};
+
 type Product = {
   id?: number;
+  documentId?: string;
   slug?: string;
   name?: string;
   Name?: string;
   Description?: string;
   description?: string;
   usd_price?: number | string;
+  PRICES?: Price[];
+  prices?: Price[];
+  Slides?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[];
+  slides?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[];
   Thumbnail?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  thumbnail?: {
     url?: string;
     formats?: {
       medium?: { url?: string };
@@ -332,6 +373,94 @@ function renderMarkdownInline(
   return nodes;
 }
 
+function renderMarkdownTextBlocks(
+  value: string,
+  keyPrefix: string,
+  onLinkPress: (url: string) => void
+): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const lines = value.split(/\n/);
+  let listBuffer: string[] = [];
+  let orderedList = false;
+  let listIndex = 0;
+
+  const flushList = () => {
+    if (!listBuffer.length) return;
+
+    nodes.push(
+      <View key={`${keyPrefix}-list-${listIndex}`} style={styles.heroListGroup}>
+        {listBuffer.map((item, itemIndex) => (
+          <View key={`${keyPrefix}-list-${listIndex}-${itemIndex}`} style={styles.heroListRow}>
+            <ThemedText style={styles.heroListBullet}>{orderedList ? `${itemIndex + 1}.` : '•'}</ThemedText>
+            <ThemedText style={styles.heroListText}>
+              {renderMarkdownInline(item, `${keyPrefix}-list-item-${listIndex}-${itemIndex}`, onLinkPress)}
+            </ThemedText>
+          </View>
+        ))}
+      </View>
+    );
+
+    listBuffer = [];
+    orderedList = false;
+    listIndex += 1;
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+
+      nodes.push(
+        <ThemedText
+          key={`${keyPrefix}-heading-${index}`}
+          style={[
+            styles.heroMarkdownHeading,
+            level >= 2 ? styles.heroMarkdownHeadingSmall : null,
+          ]}>
+          {renderMarkdownInline(headingText, `${keyPrefix}-heading-${index}`, onLinkPress)}
+        </ThemedText>
+      );
+      return;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+
+    if (bulletMatch || orderedMatch) {
+      const nextOrdered = Boolean(orderedMatch);
+      const text = bulletMatch?.[1] ?? orderedMatch?.[1] ?? '';
+
+      if (listBuffer.length && orderedList !== nextOrdered) {
+        flushList();
+      }
+
+      orderedList = nextOrdered;
+      listBuffer.push(text);
+      return;
+    }
+
+    flushList();
+    nodes.push(
+      <ThemedText key={`${keyPrefix}-paragraph-${index}`} style={styles.heroDescription}>
+        {renderMarkdownInline(trimmed, `${keyPrefix}-paragraph-${index}`, onLinkPress)}
+      </ThemedText>
+    );
+  });
+
+  flushList();
+
+  return nodes;
+}
+
 function flattenText(value: unknown): string {
   if (typeof value === 'string') return cleanText(value);
 
@@ -460,11 +589,22 @@ function resolveSeoMetaDescription(entity: { SEO?: { metaDescription?: string };
 }
 
 function resolveProductImage(product: Product): string {
+  const slides = product.Slides ?? product.slides ?? [];
+  const firstSlide = Array.isArray(slides) ? slides[0] : null;
+
   return cleanText(
+    firstSlide?.formats?.medium?.url ||
+    firstSlide?.formats?.small?.url ||
+    firstSlide?.formats?.thumbnail?.url ||
+    firstSlide?.url ||
     product.Thumbnail?.formats?.medium?.url ||
+    product.thumbnail?.formats?.medium?.url ||
     product.Thumbnail?.formats?.small?.url ||
+    product.thumbnail?.formats?.small?.url ||
     product.Thumbnail?.formats?.thumbnail?.url ||
+    product.thumbnail?.formats?.thumbnail?.url ||
     product.Thumbnail?.url ||
+    product.thumbnail?.url ||
     product.SEO?.socialImage?.formats?.medium?.url ||
     product.SEO?.socialImage?.formats?.small?.url ||
     product.SEO?.socialImage?.formats?.thumbnail?.url ||
@@ -795,7 +935,7 @@ export default function StoreScreen() {
       const [articlesResult, productsResult, pagesResult, eventsResult] = await Promise.allSettled([
         fetchStoreArticles(),
         fetchJson<CollectionResponse<Product>>(
-          `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodedSlug}&sort[0]=updatedAt:desc&pagination[pageSize]=12&populate[]=SEO.socialImage&populate[]=Thumbnail`
+          `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodedSlug}&sort[0]=updatedAt:desc&pagination[pageSize]=12&populate[]=SEO.socialImage&populate[]=Thumbnail&populate[]=Slides&populate[]=PRICES`
         ),
         fetchStorePages(resolvedStoreId),
         fetchJson<CollectionResponse<Event>>(
@@ -1105,16 +1245,7 @@ export default function StoreScreen() {
 
           {storeDescriptionMarkdown ? (
             <View style={styles.heroMarkdown}>
-              {storeDescriptionMarkdown.split(/\n{2,}/).map((paragraph, index) => {
-                const trimmed = paragraph.trim();
-                if (!trimmed) return null;
-
-                return (
-                  <ThemedText key={`md-${index}`} style={styles.heroDescription}>
-                    {renderMarkdownInline(trimmed, `hero-${index}`, openExternalUrl)}
-                  </ThemedText>
-                );
-              })}
+              {renderMarkdownTextBlocks(storeDescriptionMarkdown, 'hero', openExternalUrl)}
             </View>
           ) : (
               <ThemedText style={styles.heroDescription}>
@@ -1267,16 +1398,36 @@ export default function StoreScreen() {
                   const itemSlug = cleanText(product.slug || '');
                   const itemImage = resolveProductImage(product);
                   const itemSummary = resolveSeoMetaDescription(product) || firstSentence(cleanText(product.description || product.Description || 'No product description yet.'));
+                  const firstPrice = (product.PRICES ?? product.prices ?? [])[0];
+                  const resolvedPrice =
+                    typeof firstPrice?.Price === 'number'
+                      ? firstPrice.Price
+                      : typeof firstPrice?.price === 'number'
+                        ? firstPrice.price
+                        : null;
                   const price =
                     typeof product.usd_price === 'number' || typeof product.usd_price === 'string'
                       ? `$${product.usd_price}`
+                      : resolvedPrice != null
+                        ? `$${resolvedPrice.toFixed(2)}`
                       : 'Price not set';
                   const itemUrl = itemSlug ? joinPath(storefrontUrl, `products/${itemSlug}`) : storefrontUrl;
 
                   return (
                     <Pressable
                       key={`${product.id ?? 'p'}-${index}`}
-                      onPress={() => openItemInWebView(itemUrl, name)}
+                      onPress={() =>
+                        itemSlug
+                          ? router.push({
+                            pathname: '/[storeSlug]/products/[slug]',
+                            params: {
+                              storeSlug: cleanSlug,
+                              slug: itemSlug,
+                              title: name,
+                            },
+                          } as never)
+                          : openItemInWebView(itemUrl, name)
+                      }
                       style={({ pressed }) => [styles.railCard, pressed && styles.itemCardPressed]}>
                       {itemImage ? (
                         <Image source={{ uri: itemImage }} style={styles.railImage} contentFit="cover" transition={180} />
@@ -1628,6 +1779,36 @@ const styles = StyleSheet.create({
   },
   heroMarkdown: {
     gap: 8,
+  },
+  heroMarkdownHeading: {
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: '700',
+    color: '#0E7490',
+  },
+  heroMarkdownHeadingSmall: {
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  heroListGroup: {
+    gap: 6,
+  },
+  heroListRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  heroListBullet: {
+    width: 16,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#155E75',
+    textAlign: 'center',
+  },
+  heroListText: {
+    flex: 1,
+    opacity: 0.84,
+    lineHeight: 20,
   },
   markdownInline: {
     fontFamily: 'Manrope',

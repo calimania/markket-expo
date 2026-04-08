@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAppConfig } from '@/hooks/use-app-config';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import { apiGet, apiPost } from '@/lib/api';
+import { apiGet } from '@/lib/api';
 
 type MeResponse = {
   id?: number;
@@ -38,11 +38,11 @@ type MeResponse = {
 type UserDetailResponse = MeResponse;
 
 type StoreLookupResponse = {
-  data?: Array<{
+  data?: {
     id?: number;
     documentId?: string;
     slug?: string;
-  }>;
+  }[];
 };
 
 const WHATSAPP_MAGIC_NUMBER = '15186291830';
@@ -451,7 +451,7 @@ export default function ProfileScreen() {
                   onPress={() => setShowEmailMagicForm((prev) => !prev)}
                 />
                 <ThemedText style={styles.heroHint}>
-                  Send "magic" to {WHATSAPP_MAGIC_LABEL}. It usually resolves faster than email on mobile.
+                  Send &quot;magic&quot; to {WHATSAPP_MAGIC_LABEL}. It usually resolves faster than email on mobile.
                 </ThemedText>
               </View>
           )}
