@@ -23,6 +23,11 @@ export default function RootLayout() {
     Manrope: require('@/assets/fonts/Manrope-VariableFont_wght.ttf'),
     Newsreader: require('@/assets/fonts/Newsreader-VariableFont_opsz,wght.ttf'),
     RobotoMono: require('@/assets/fonts/RobotoMono-VariableFont_wght.ttf'),
+    SpaceGrotesk: require('@/assets/fonts/SpaceGrotesk-VariableFont_wght.ttf'),
+    ComicMono: require('@/assets/fonts/ComicMono.ttf'),
+    ComicMonoBold: require('@/assets/fonts/ComicMono-Bold.ttf'),
+    GilroyBold: require('@/assets/fonts/Gilroy-Bold.ttf'),
+    GilroyBlack: require('@/assets/fonts/Gilroy-Black.ttf'),
   });
 
   useEffect(() => {

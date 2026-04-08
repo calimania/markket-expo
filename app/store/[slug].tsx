@@ -1,12 +1,13 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Image } from 'expo-image';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import {
   ActivityIndicator,
   Alert,
   Linking,
   Pressable,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +17,8 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { Badge } from '@/components/ui/badge';
+import { SkeletonCard } from '@/components/ui/skeleton';
 
 type StoreUrl = {
   id?: number;
@@ -75,6 +78,12 @@ type Article = {
       thumbnail?: { url?: string };
     };
   };
+  SEO?: {
+    metaDescription?: string;
+  };
+  seo?: {
+    metaDescription?: string;
+  };
   store?: {
     slug?: string;
   } | null;
@@ -83,14 +92,85 @@ type Article = {
   }[];
 };
 
+type Price = {
+  id?: number;
+  STRIPE_ID?: string;
+  Price?: number;
+  price?: number;
+  Name?: string;
+  Currency?: string;
+  currency?: string;
+  Description?: string;
+  inventory?: number | null;
+  hidden?: boolean;
+  ships_to?: string[];
+};
+
 type Product = {
   id?: number;
+  documentId?: string;
   slug?: string;
   name?: string;
   Name?: string;
   Description?: string;
   description?: string;
   usd_price?: number | string;
+  PRICES?: Price[];
+  prices?: Price[];
+  Slides?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[];
+  slides?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  }[];
+  Thumbnail?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  thumbnail?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  SEO?: {
+    metaDescription?: string;
+    socialImage?: {
+      url?: string;
+      formats?: {
+        medium?: { url?: string };
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    };
+  };
+  seo?: {
+    metaDescription?: string;
+    socialImage?: {
+      url?: string;
+      formats?: {
+        medium?: { url?: string };
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    };
+  };
 };
 
 type Page = {
@@ -111,6 +191,7 @@ type Page = {
         thumbnail?: { url?: string };
       };
     };
+    metaDescription?: string;
   };
   seo?: {
     socialImage?: {
@@ -121,6 +202,7 @@ type Page = {
         thumbnail?: { url?: string };
       };
     };
+    metaDescription?: string;
   };
   store?: {
     slug?: string;
@@ -130,8 +212,61 @@ type Page = {
   }[];
 };
 
+type Event = {
+  id?: number;
+  documentId?: string;
+  slug?: string;
+  Name?: string;
+  startDate?: string;
+  endDate?: string;
+  usd_price?: number | string | null;
+  PRICES?: { id?: number; price?: number; currency?: string }[];
+  Thumbnail?: {
+    url?: string;
+    formats?: {
+      medium?: { url?: string };
+      small?: { url?: string };
+      thumbnail?: { url?: string };
+    };
+  } | null;
+  SEO?: {
+    metaUrl?: string;
+    metaDescription?: string;
+    socialImage?: {
+      url?: string;
+      formats?: {
+        medium?: { url?: string };
+        small?: { url?: string };
+        thumbnail?: { url?: string };
+      };
+    };
+  };
+  stores?: { slug?: string; title?: string }[];
+  maxCapacity?: number | null;
+  amountSold?: number | null;
+};
+
 type CollectionResponse<T> = {
   data?: T[];
+};
+
+type InlineNode = {
+  type?: string;
+  text?: string;
+  url?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  code?: boolean;
+  children?: InlineNode[];
+};
+
+type ContentBlock = {
+  type?: string;
+  level?: number;
+  format?: string;
+  children?: InlineNode[];
 };
 
 function extractSettledError(result: PromiseSettledResult<unknown>, fallback: string): string | null {
@@ -234,6 +369,94 @@ function renderMarkdownInline(
       </Text>
     );
   }
+
+  return nodes;
+}
+
+function renderMarkdownTextBlocks(
+  value: string,
+  keyPrefix: string,
+  onLinkPress: (url: string) => void
+): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const lines = value.split(/\n/);
+  let listBuffer: string[] = [];
+  let orderedList = false;
+  let listIndex = 0;
+
+  const flushList = () => {
+    if (!listBuffer.length) return;
+
+    nodes.push(
+      <View key={`${keyPrefix}-list-${listIndex}`} style={styles.heroListGroup}>
+        {listBuffer.map((item, itemIndex) => (
+          <View key={`${keyPrefix}-list-${listIndex}-${itemIndex}`} style={styles.heroListRow}>
+            <ThemedText style={styles.heroListBullet}>{orderedList ? `${itemIndex + 1}.` : '•'}</ThemedText>
+            <ThemedText style={styles.heroListText}>
+              {renderMarkdownInline(item, `${keyPrefix}-list-item-${listIndex}-${itemIndex}`, onLinkPress)}
+            </ThemedText>
+          </View>
+        ))}
+      </View>
+    );
+
+    listBuffer = [];
+    orderedList = false;
+    listIndex += 1;
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+
+      nodes.push(
+        <ThemedText
+          key={`${keyPrefix}-heading-${index}`}
+          style={[
+            styles.heroMarkdownHeading,
+            level >= 2 ? styles.heroMarkdownHeadingSmall : null,
+          ]}>
+          {renderMarkdownInline(headingText, `${keyPrefix}-heading-${index}`, onLinkPress)}
+        </ThemedText>
+      );
+      return;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+
+    if (bulletMatch || orderedMatch) {
+      const nextOrdered = Boolean(orderedMatch);
+      const text = bulletMatch?.[1] ?? orderedMatch?.[1] ?? '';
+
+      if (listBuffer.length && orderedList !== nextOrdered) {
+        flushList();
+      }
+
+      orderedList = nextOrdered;
+      listBuffer.push(text);
+      return;
+    }
+
+    flushList();
+    nodes.push(
+      <ThemedText key={`${keyPrefix}-paragraph-${index}`} style={styles.heroDescription}>
+        {renderMarkdownInline(trimmed, `${keyPrefix}-paragraph-${index}`, onLinkPress)}
+      </ThemedText>
+    );
+  });
+
+  flushList();
 
   return nodes;
 }
@@ -361,6 +584,39 @@ function resolvePageImage(page: Page): string {
   );
 }
 
+function resolveSeoMetaDescription(entity: { SEO?: { metaDescription?: string }; seo?: { metaDescription?: string } }): string {
+  return cleanText(entity.SEO?.metaDescription || entity.seo?.metaDescription || '');
+}
+
+function resolveProductImage(product: Product): string {
+  const slides = product.Slides ?? product.slides ?? [];
+  const firstSlide = Array.isArray(slides) ? slides[0] : null;
+
+  return cleanText(
+    firstSlide?.formats?.medium?.url ||
+    firstSlide?.formats?.small?.url ||
+    firstSlide?.formats?.thumbnail?.url ||
+    firstSlide?.url ||
+    product.Thumbnail?.formats?.medium?.url ||
+    product.thumbnail?.formats?.medium?.url ||
+    product.Thumbnail?.formats?.small?.url ||
+    product.thumbnail?.formats?.small?.url ||
+    product.Thumbnail?.formats?.thumbnail?.url ||
+    product.thumbnail?.formats?.thumbnail?.url ||
+    product.Thumbnail?.url ||
+    product.thumbnail?.url ||
+    product.SEO?.socialImage?.formats?.medium?.url ||
+    product.SEO?.socialImage?.formats?.small?.url ||
+    product.SEO?.socialImage?.formats?.thumbnail?.url ||
+    product.SEO?.socialImage?.url ||
+    product.seo?.socialImage?.formats?.medium?.url ||
+    product.seo?.socialImage?.formats?.small?.url ||
+    product.seo?.socialImage?.formats?.thumbnail?.url ||
+    product.seo?.socialImage?.url ||
+    ''
+  );
+}
+
 function pageBelongsToStore(page: Page, targetSlug: string): boolean {
   const slug = cleanText(targetSlug);
   if (!slug) return true;
@@ -395,12 +651,86 @@ function hasPageOwnershipSignals(items: Page[]): boolean {
   });
 }
 
+const MAGIC_PAGE_SLUGS = new Set(['newsletter', 'products', 'blog', 'home']);
+
+function getPageSlugValue(page: Page): string {
+  return cleanText(page.slug || '').toLocaleLowerCase();
+}
+
+function getPageBodyContent(page: Page | undefined): string {
+  if (!page) return '';
+  const raw = typeof page.content === 'string' ? page.content : typeof page.Content === 'string' ? page.Content : '';
+  if (raw) return normalizeMarkdown(raw);
+  return normalizeMarkdown(flattenText(page.content ?? page.Content));
+}
+
+function getPageContentBlocks(page: Page | undefined): ContentBlock[] {
+  if (!page) return [];
+  const value = page.content ?? page.Content;
+  if (!Array.isArray(value)) return [];
+  return value as ContentBlock[];
+}
+
+function inlineNodesText(nodes?: InlineNode[]): string {
+  if (!nodes?.length) return '';
+
+  return nodes
+    .map((node) => {
+      if (typeof node.text === 'string') return node.text;
+      if (Array.isArray(node.children)) return inlineNodesText(node.children);
+      return '';
+    })
+    .join(' ')
+    .trim();
+}
+
+function getSpecialPagePreview(page: Page | undefined): string {
+  const blocks = getPageContentBlocks(page);
+  for (const block of blocks) {
+    const text = inlineNodesText(block.children);
+    if (text) return firstSentence(text);
+  }
+
+  return firstSentence(getPageBodyContent(page));
+}
+
+function isMagicPageSlug(slug: string): boolean {
+  return MAGIC_PAGE_SLUGS.has(slug);
+}
+
 function sortPagesByTitle(items: Page[]): Page[] {
   return [...items].sort((left, right) => {
     const leftTitle = cleanText(left.title || left.Title || '').toLocaleLowerCase();
     const rightTitle = cleanText(right.title || right.Title || '').toLocaleLowerCase();
     return leftTitle.localeCompare(rightTitle);
   });
+}
+
+function formatEventDate(dateStr?: string): string {
+  if (!dateStr) return '';
+  try {
+    return new Date(dateStr).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+function resolveEventImage(event: Event): string {
+  return cleanText(
+    event.Thumbnail?.formats?.medium?.url ||
+    event.Thumbnail?.formats?.small?.url ||
+    event.Thumbnail?.formats?.thumbnail?.url ||
+    event.Thumbnail?.url ||
+    event.SEO?.socialImage?.formats?.medium?.url ||
+    event.SEO?.socialImage?.formats?.small?.url ||
+    event.SEO?.socialImage?.formats?.thumbnail?.url ||
+    event.SEO?.socialImage?.url ||
+    ''
+  );
 }
 
 export default function StoreScreen() {
@@ -448,6 +778,8 @@ export default function StoreScreen() {
   const [articlesError, setArticlesError] = useState<string | null>(null);
   const [productsError, setProductsError] = useState<string | null>(null);
   const [pagesError, setPagesError] = useState<string | null>(null);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [eventsError, setEventsError] = useState<string | null>(null);
 
   const openExternalUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {
@@ -530,10 +862,10 @@ export default function StoreScreen() {
   const fetchStoreArticles = useCallback(async (): Promise<CollectionResponse<Article>> => {
     const encoded = encodeURIComponent(cleanSlug);
     const attempts = [
-      `${apiBaseUrl}/api/articles?filters[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
-      `${apiBaseUrl}/api/articles?filters[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
-      `${apiBaseUrl}/api/articles?filter[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
-      `${apiBaseUrl}/api/articles?filter[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store`,
+      `${apiBaseUrl}/api/articles?filters[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store&populate[]=SEO`,
+      `${apiBaseUrl}/api/articles?filters[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store&populate[]=SEO`,
+      `${apiBaseUrl}/api/articles?filter[store][slug][$eq]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store&populate[]=SEO`,
+      `${apiBaseUrl}/api/articles?filter[store][slug]=${encoded}&sort[0]=updatedAt:desc&pagination[pageSize]=8&populate[]=cover&populate[]=store&populate[]=SEO`,
     ];
 
     let lastError: Error | null = null;
@@ -586,6 +918,7 @@ export default function StoreScreen() {
     setArticlesError(null);
     setProductsError(null);
     setPagesError(null);
+    setEventsError(null);
 
     try {
       const storeInfoResult = await fetchStoreInfo();
@@ -594,12 +927,20 @@ export default function StoreScreen() {
 
       setStore(resolvedStore);
 
-      const [articlesResult, productsResult, pagesResult] = await Promise.allSettled([
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const since = yesterday.toISOString().slice(0, 10);
+      const encodedSlug = encodeURIComponent(cleanSlug);
+
+      const [articlesResult, productsResult, pagesResult, eventsResult] = await Promise.allSettled([
         fetchStoreArticles(),
         fetchJson<CollectionResponse<Product>>(
-          `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodeURIComponent(cleanSlug)}&sort[0]=updatedAt:desc&pagination[pageSize]=5`
+          `${apiBaseUrl}/api/products?filters[stores][slug][$eq]=${encodedSlug}&sort[0]=updatedAt:desc&pagination[pageSize]=12&populate[]=SEO.socialImage&populate[]=Thumbnail&populate[]=Slides&populate[]=PRICES`
         ),
         fetchStorePages(resolvedStoreId),
+        fetchJson<CollectionResponse<Event>>(
+          `${apiBaseUrl}/api/events?filters[stores][slug][$eq]=${encodedSlug}&sort[0]=startDate:asc&filters[startDate][$gte]=${since}&populate[]=PRICES&populate[]=SEO&populate[]=Thumbnail&pagination[pageSize]=10`
+        ),
       ]);
       if (articlesResult.status === 'fulfilled') {
         const rawArticles = articlesResult.value.data ?? [];
@@ -638,6 +979,14 @@ export default function StoreScreen() {
         setPages([]);
         setPagesError(extractSettledError(pagesResult, 'Could not load pages'));
       }
+
+      if (eventsResult.status === 'fulfilled') {
+        setEvents(eventsResult.value.data ?? []);
+        setEventsError(null);
+      } else {
+        setEvents([]);
+        setEventsError(extractSettledError(eventsResult, 'Could not load events'));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unexpected error');
     } finally {
@@ -654,6 +1003,7 @@ export default function StoreScreen() {
     if (typeof store?.id === 'number') return String(store.id);
     return '';
   }, [store?.id]);
+  const storeDocumentId = useMemo(() => cleanText(store?.documentId || ''), [store?.documentId]);
   const storeLogo = useMemo(() => resolveStoreLogo(store), [store]);
   const storefrontUrl = useMemo(() => getStorefrontUrl(displayBaseUrl, cleanSlug), [displayBaseUrl, cleanSlug]);
   const storeLinks = useMemo(() => (store?.URLS ?? []).filter((item) => getUrl(item)), [store?.URLS]);
@@ -661,6 +1011,17 @@ export default function StoreScreen() {
     () => normalizeMarkdown(store?.description || store?.Description || ''),
     [store]
   );
+  const normalPages = useMemo(() => pages.filter((page) => !isMagicPageSlug(getPageSlugValue(page))), [pages]);
+  const homePage = useMemo(() => pages.find((page) => getPageSlugValue(page) === 'home'), [pages]);
+  const blogPage = useMemo(() => pages.find((page) => getPageSlugValue(page) === 'blog'), [pages]);
+  const productsPage = useMemo(() => pages.find((page) => getPageSlugValue(page) === 'products'), [pages]);
+  const newsletterPage = useMemo(() => pages.find((page) => getPageSlugValue(page) === 'newsletter'), [pages]);
+
+  const homePageBody = useMemo(() => getPageBodyContent(homePage), [homePage]);
+  const blogPageBody = useMemo(() => getSpecialPagePreview(blogPage), [blogPage]);
+  const productsPageBody = useMemo(() => getSpecialPagePreview(productsPage), [productsPage]);
+  const productsPageTitle = useMemo(() => cleanText(productsPage?.title || productsPage?.Title || '') || 'Products', [productsPage]);
+  const newsletterPageBody = useMemo(() => getSpecialPagePreview(newsletterPage), [newsletterPage]);
 
   const openItemInWebView = useCallback(
     (url: string, title: string) => {
@@ -668,6 +1029,16 @@ export default function StoreScreen() {
     },
     [router]
   );
+
+  const shareStore = useCallback(() => {
+    Share.share({
+      title: `${storeTitle} on Markket`,
+      message: `${storeTitle} on Markket: ${storefrontUrl}`,
+      url: storefrontUrl,
+    }).catch(() => {
+      Alert.alert('Could not share store right now');
+    });
+  }, [storeTitle, storefrontUrl]);
 
   const openArticle = useCallback(
     (articleSlug: string, articleTitle: string, fallbackUrl: string) => {
@@ -702,16 +1073,113 @@ export default function StoreScreen() {
           slug: pageSlug,
           store: cleanSlug,
           storeId,
+          storeDocumentId,
           title: pageTitle || 'Page',
         },
       } as never);
     },
-    [cleanSlug, openItemInWebView, router, storeId]
+    [cleanSlug, openItemInWebView, router, storeDocumentId, storeId]
   );
 
   const openBlogArchive = useCallback(() => {
     router.push({ pathname: '/store-blog/[slug]', params: { slug: cleanSlug, title: storeTitle } } as never);
   }, [cleanSlug, router, storeTitle]);
+
+  const renderSpecialInline = useCallback(
+    (nodes: InlineNode[] | undefined, keyPrefix: string): ReactNode[] => {
+      if (!nodes?.length) return [];
+
+      return nodes.map((node, index) => {
+        const key = `${keyPrefix}-${node.type || 'node'}-${index}`;
+        const textStyle = [
+          styles.specialCardText,
+          node.bold ? styles.markdownBold : null,
+          node.italic ? styles.markdownItalic : null,
+          node.underline || node.strikethrough ? styles.specialTextDecorated : null,
+          node.code ? styles.markdownCode : null,
+        ];
+
+        if (typeof node.text === 'string' && node.text.trim()) {
+          return <Text key={key} style={textStyle}>{node.text}</Text>;
+        }
+
+        if (node.type === 'link' && node.url) {
+          return (
+            <Text key={key} style={[...textStyle, styles.markdownLink]} onPress={() => openExternalUrl(node.url || '')}>
+              {renderSpecialInline(node.children, `${key}-children`)}
+            </Text>
+          );
+        }
+
+        if (Array.isArray(node.children)) {
+          return (
+            <Text key={key} style={textStyle}>
+              {renderSpecialInline(node.children, `${key}-children`)}
+            </Text>
+          );
+        }
+
+        return null;
+      });
+    },
+    [openExternalUrl]
+  );
+
+  const renderSpecialPageContent = useCallback(
+    (page: Page | undefined, keyPrefix: string) => {
+      const blocks = getPageContentBlocks(page);
+
+      if (blocks.length) {
+        return blocks.map((block, index) => {
+          const key = `${keyPrefix}-${block.type || 'block'}-${index}`;
+
+          if (block.type === 'heading') {
+            return (
+              <ThemedText key={key} style={styles.specialHeading}>
+                {renderSpecialInline(block.children, `${key}-heading`)}
+              </ThemedText>
+            );
+          }
+
+          if (block.type === 'list') {
+            const items = block.children ?? [];
+            const ordered = block.format === 'ordered';
+            return (
+              <View key={key} style={styles.specialListGroup}>
+                {items.map((item, itemIndex) => (
+                  <View key={`${key}-item-${itemIndex}`} style={styles.specialListRow}>
+                    <ThemedText style={styles.specialListBullet}>{ordered ? `${itemIndex + 1}.` : '•'}</ThemedText>
+                    <ThemedText style={styles.specialListText}>
+                      {renderSpecialInline(item.children, `${key}-item-content-${itemIndex}`)}
+                    </ThemedText>
+                  </View>
+                ))}
+              </View>
+            );
+          }
+
+          return (
+            <ThemedText key={key} style={styles.specialCardText}>
+              {renderSpecialInline(block.children, `${key}-paragraph`)}
+            </ThemedText>
+          );
+        });
+      }
+
+      return getPageBodyContent(page)
+        .split(/\n{2,}/)
+        .map((paragraph, index) => {
+          const trimmed = paragraph.trim();
+          if (!trimmed) return null;
+          return (
+            <ThemedText key={`${keyPrefix}-md-${index}`} style={styles.specialCardText}>
+              {renderMarkdownInline(trimmed, `${keyPrefix}-md-${index}`, openExternalUrl)}
+            </ThemedText>
+          );
+        });
+    },
+    [openExternalUrl, renderSpecialInline]
+  );
 
   if (!ready || (loading && !store)) {
     return (
@@ -751,7 +1219,7 @@ export default function StoreScreen() {
       />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Animated.View style={styles.hero} entering={FadeInDown.duration(360)}>
+        <Animated.View style={styles.hero} entering={FadeInDown.duration(400)}>
           <View style={styles.heroTopRow}>
             {storeLogo ? (
               <Image source={{ uri: storeLogo }} style={styles.heroLogo} contentFit="cover" transition={250} />
@@ -763,31 +1231,21 @@ export default function StoreScreen() {
               </View>
             )}
 
-            <View style={styles.heroBadge}>
-              <ThemedText style={styles.heroBadgeText}>Native Store Hub</ThemedText>
-            </View>
+            <Badge label="MARKKET STORE" />
           </View>
 
           <ThemedText type="title" style={styles.heroTitle}>
             {storeTitle}
           </ThemedText>
           <ThemedText style={styles.heroSlug}>/{cleanSlug}</ThemedText>
+          <ThemedText style={styles.heroTagline}>Curated products, pages, events, and stories in one place.</ThemedText>
           {previewLocaleValue && !store?.URLS?.length ? (
             <ThemedText style={styles.heroMeta}>Locale {cleanText(previewLocaleValue).toUpperCase()}</ThemedText>
           ) : null}
 
           {storeDescriptionMarkdown ? (
             <View style={styles.heroMarkdown}>
-              {storeDescriptionMarkdown.split(/\n{2,}/).map((paragraph, index) => {
-                const trimmed = paragraph.trim();
-                if (!trimmed) return null;
-
-                return (
-                  <ThemedText key={`md-${index}`} style={styles.heroDescription}>
-                    {renderMarkdownInline(trimmed, `hero-${index}`, openExternalUrl)}
-                  </ThemedText>
-                );
-              })}
+              {renderMarkdownTextBlocks(storeDescriptionMarkdown, 'hero', openExternalUrl)}
             </View>
           ) : (
               <ThemedText style={styles.heroDescription}>
@@ -801,9 +1259,12 @@ export default function StoreScreen() {
               </ThemedText>
           )}
 
-          <Pressable style={styles.primaryButton} onPress={() => openUrlChoice(storefrontUrl, 'Storefront')}>
-            <ThemedText style={styles.primaryButtonText}>Open Storefront</ThemedText>
-          </Pressable>
+          <View style={styles.heroActions}>
+            <Pressable style={styles.secondaryHeroButton} onPress={shareStore}>
+              <ThemedText style={styles.secondaryHeroButtonText}>Share Store</ThemedText>
+            </Pressable>
+            <ThemedText style={styles.heroUrlHint}>{storefrontUrl.replace('https://', '')}</ThemedText>
+          </View>
         </Animated.View>
 
         {loading ? (
@@ -837,7 +1298,7 @@ export default function StoreScreen() {
           </Animated.View>
         ) : null}
 
-        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(130)}>
+        <Animated.View style={styles.section} entering={FadeInUp.duration(340).delay(130)}>
           <View style={styles.sectionHeader}>
             <View style={[styles.sectionMarker, styles.blogMarker]} />
             <View style={styles.sectionTitleWrap}>
@@ -854,11 +1315,17 @@ export default function StoreScreen() {
             <ThemedText style={styles.seeMoreText}>Keep reading all articles</ThemedText>
             <ThemedText style={styles.seeMoreArrow}>→</ThemedText>
           </Pressable>
-          {loading ? (
-            <View style={styles.loadingSectionCard}>
-              <ActivityIndicator size="small" />
-              <ThemedText style={styles.loadingSectionText}>Loading blog posts...</ThemedText>
+          {blogPageBody ? (
+            <View style={styles.inlineInfoCard}>
+              <ThemedText style={styles.inlineInfoText}>{firstSentence(blogPageBody)}</ThemedText>
             </View>
+          ) : null}
+          {loading ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.railContent} style={styles.railScroll}>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+            </ScrollView>
           ) : articles.length ? (
             <ScrollView
               horizontal
@@ -869,6 +1336,7 @@ export default function StoreScreen() {
               const itemSlug = cleanText(article.slug || '');
               const itemTitle = cleanText(article.title || article.Title || 'Untitled article');
               const itemUrl = itemSlug ? joinPath(storefrontUrl, `blog/${itemSlug}`) : storefrontUrl;
+                const itemSummary = resolveSeoMetaDescription(article) || firstSentence(flattenText(article.content ?? article.Content)) || 'No preview text yet.';
                 const itemImage = resolveArticleImage(article);
 
               return (
@@ -885,7 +1353,7 @@ export default function StoreScreen() {
                   )}
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
-                  <ThemedText style={styles.itemBody}>{firstSentence(flattenText(article.content ?? article.Content)) || 'No preview text yet.'}</ThemedText>
+                  <ThemedText style={styles.itemBody}>{itemSummary}</ThemedText>
                 </Pressable>
               );
               })}
@@ -898,37 +1366,86 @@ export default function StoreScreen() {
           )}
         </Animated.View>
 
-        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(170)}>
-          <ThemedText type="defaultSemiBold">Products</ThemedText>
-          {loading ? (
-            <View style={styles.loadingSectionCard}>
-              <ActivityIndicator size="small" />
-              <ThemedText style={styles.loadingSectionText}>Loading products...</ThemedText>
+        <Animated.View style={styles.section} entering={FadeInUp.duration(340).delay(170)}>
+          <View style={styles.sectionHeader}>
+            <View style={[styles.sectionMarker, styles.productMarker]} />
+            <View style={styles.sectionTitleWrap}>
+              <ThemedText type="defaultSemiBold" style={styles.sectionTitle}>
+                {productsPageTitle}
+              </ThemedText>
+              <ThemedText style={styles.sectionSubtitle}>
+                {productsPageBody ? firstSentence(productsPageBody) : 'Shop from this store'}
+              </ThemedText>
             </View>
+            <View style={[styles.sectionBadge, styles.productBadge]}>
+              <ThemedText style={styles.sectionBadgeText}>shop</ThemedText>
+            </View>
+          </View>
+          {loading ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.railContent} style={styles.railScroll}>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+            </ScrollView>
           ) : products.length ? (
-            products.slice(0, 3).map((product, index) => {
-              const name = cleanText(product.name || product.Name || 'Untitled product');
-              const itemSlug = cleanText(product.slug || '');
-              const price =
-                typeof product.usd_price === 'number' || typeof product.usd_price === 'string'
-                  ? `$${product.usd_price}`
-                  : 'Price not set';
-              const itemUrl = itemSlug ? joinPath(storefrontUrl, `products/${itemSlug}`) : storefrontUrl;
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.railContent}
+                style={styles.railScroll}>
+                {products.map((product, index) => {
+                  const name = cleanText(product.name || product.Name || 'Untitled product');
+                  const itemSlug = cleanText(product.slug || '');
+                  const itemImage = resolveProductImage(product);
+                  const itemSummary = resolveSeoMetaDescription(product) || firstSentence(cleanText(product.description || product.Description || 'No product description yet.'));
+                  const firstPrice = (product.PRICES ?? product.prices ?? [])[0];
+                  const resolvedPrice =
+                    typeof firstPrice?.Price === 'number'
+                      ? firstPrice.Price
+                      : typeof firstPrice?.price === 'number'
+                        ? firstPrice.price
+                        : null;
+                  const price =
+                    typeof product.usd_price === 'number' || typeof product.usd_price === 'string'
+                      ? `$${product.usd_price}`
+                      : resolvedPrice != null
+                        ? `$${resolvedPrice.toFixed(2)}`
+                      : 'Price not set';
+                  const itemUrl = itemSlug ? joinPath(storefrontUrl, `products/${itemSlug}`) : storefrontUrl;
 
-              return (
-                <Pressable
-                  key={`${product.id ?? 'p'}-${index}`}
-                  onPress={() => openItemInWebView(itemUrl, name)}
-                  style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}>
-                  <View style={styles.itemHeader}>
-                    <ThemedText style={styles.itemTitle}>{name}</ThemedText>
-                    <ThemedText style={styles.priceTag}>{price}</ThemedText>
-                  </View>
-                  <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
-                  <ThemedText style={styles.itemBody}>{firstSentence(cleanText(product.description || product.Description || 'No product description yet.'))}</ThemedText>
-                </Pressable>
-              );
-            })
+                  return (
+                    <Pressable
+                      key={`${product.id ?? 'p'}-${index}`}
+                      onPress={() =>
+                        itemSlug
+                          ? router.push({
+                            pathname: '/[storeSlug]/products/[slug]',
+                            params: {
+                              storeSlug: cleanSlug,
+                              slug: itemSlug,
+                              title: name,
+                            },
+                          } as never)
+                          : openItemInWebView(itemUrl, name)
+                      }
+                      style={({ pressed }) => [styles.railCard, pressed && styles.itemCardPressed]}>
+                      {itemImage ? (
+                        <Image source={{ uri: itemImage }} style={styles.railImage} contentFit="cover" transition={180} />
+                      ) : (
+                        <View style={[styles.railImageFallback, styles.productMarkerSoft]}>
+                          <ThemedText style={styles.railImageFallbackText}>PRODUCT</ThemedText>
+                        </View>
+                      )}
+                      <View style={styles.itemHeader}>
+                        <ThemedText style={styles.itemTitle}>{name}</ThemedText>
+                        <ThemedText style={styles.priceTag}>{price}</ThemedText>
+                      </View>
+                      <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
+                      <ThemedText style={styles.itemBody}>{itemSummary}</ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
           ) : (
             <View style={styles.emptyStateWrap}>
               <ThemedText style={styles.emptyText}>No products listed yet.</ThemedText>
@@ -937,7 +1454,7 @@ export default function StoreScreen() {
           )}
         </Animated.View>
 
-        <Animated.View style={styles.section} entering={FadeInDown.duration(320).delay(210)}>
+        <Animated.View style={styles.section} entering={FadeInUp.duration(340).delay(210)}>
           <View style={styles.sectionHeader}>
             <View style={[styles.sectionMarker, styles.pageMarker]} />
             <View style={styles.sectionTitleWrap}>
@@ -951,20 +1468,26 @@ export default function StoreScreen() {
             </View>
           </View>
           {loading ? (
-            <View style={styles.loadingSectionCard}>
-              <ActivityIndicator size="small" />
-              <ThemedText style={styles.loadingSectionText}>Loading pages...</ThemedText>
-            </View>
-          ) : pages.length ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.railContent} style={styles.railScroll}>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+            </ScrollView>
+          ) : normalPages.length ? (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.railContent}
               style={styles.railScroll}>
-              {pages.slice(0, 12).map((page, index) => {
+                {normalPages.slice(0, 12).map((page, index) => {
               const itemSlug = cleanText(page.slug || '');
               const itemTitle = cleanText(page.title || page.Title || 'Untitled page');
-              const itemUrl = itemSlug ? joinPath(storefrontUrl, `about/${itemSlug}`) : storefrontUrl;
+                  const itemSummary = resolveSeoMetaDescription(page) || firstSentence(flattenText(page.content ?? page.Content)) || 'No page preview available.';
+                  const itemUrl = itemSlug
+                    ? itemSlug === 'about'
+                      ? joinPath(storefrontUrl, 'about')
+                      : joinPath(storefrontUrl, `about/${itemSlug}`)
+                    : storefrontUrl;
                 const itemImage = resolvePageImage(page);
 
               return (
@@ -981,18 +1504,133 @@ export default function StoreScreen() {
                   )}
                   <ThemedText style={styles.itemTitle}>{itemTitle}</ThemedText>
                   <ThemedText style={styles.itemMeta}>/{itemSlug || 'no-slug'}</ThemedText>
-                  <ThemedText style={styles.itemBody}>{firstSentence(flattenText(page.content ?? page.Content)) || 'No page preview available.'}</ThemedText>
+                  <ThemedText style={styles.itemBody}>{itemSummary}</ThemedText>
                 </Pressable>
               );
               })}
               </ScrollView>
           ) : (
             <View style={styles.emptyStateWrap}>
-              <ThemedText style={styles.emptyText}>No pages published yet.</ThemedText>
+                  <ThemedText style={styles.emptyText}>No additional pages published yet.</ThemedText>
               {pagesError ? <ThemedText style={styles.sectionErrorText}>Debug: {pagesError}</ThemedText> : null}
             </View>
           )}
         </Animated.View>
+
+        <Animated.View style={styles.section} entering={FadeInUp.duration(340).delay(250)}>
+          <View style={styles.sectionHeader}>
+            <View style={[styles.sectionMarker, styles.eventMarker]} />
+            <View style={styles.sectionTitleWrap}>
+              <ThemedText type="defaultSemiBold" style={styles.sectionTitle}>
+                Events
+              </ThemedText>
+              <ThemedText style={styles.sectionSubtitle}>Upcoming from this store</ThemedText>
+            </View>
+            <View style={[styles.sectionBadge, styles.eventBadge]}>
+              <ThemedText style={[styles.sectionBadgeText, styles.eventBadgeText]}>soon</ThemedText>
+            </View>
+          </View>
+
+          {loading ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.railContent} style={styles.railScroll}>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+              <View style={styles.skeletonCardWrap}><SkeletonCard /></View>
+            </ScrollView>
+          ) : events.length ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.railContent}
+              style={styles.railScroll}>
+              {events.map((event, index) => {
+                const eventSlug = cleanText(event.slug || '');
+                const eventTitle = cleanText(event.Name || 'Untitled event');
+                const eventSummary = resolveSeoMetaDescription(event);
+                const coverUrl = resolveEventImage(event);
+                const firstPrice = event.PRICES?.[0];
+                const isFree = !event.usd_price && (!firstPrice?.price || firstPrice.price === 0);
+                return (
+                  <Pressable
+                    key={`${event.id ?? 'e'}-${index}`}
+                    style={({ pressed }) => [styles.railCard, pressed && styles.itemCardPressed]}
+                    onPress={() =>
+                      eventSlug
+                        ? router.push({ pathname: '/event/[slug]', params: { slug: eventSlug } } as never)
+                        : null
+                    }>
+                    {coverUrl ? (
+                      <Image source={{ uri: coverUrl }} style={styles.railImage} contentFit="cover" transition={180} />
+                    ) : (
+                      <View style={[styles.railImageFallback, styles.eventMarkerSoft]}>
+                        <ThemedText style={styles.railImageFallbackText}>EVENT</ThemedText>
+                      </View>
+                    )}
+                    {event.startDate ? (
+                      <ThemedText style={styles.eventDateLabel}>
+                        {formatEventDate(event.startDate)}
+                      </ThemedText>
+                    ) : null}
+                    <ThemedText style={styles.itemTitle} numberOfLines={2}>{eventTitle}</ThemedText>
+                    {eventSummary ? <ThemedText style={styles.itemBody}>{eventSummary}</ThemedText> : null}
+                    {isFree ? (
+                      <ThemedText style={styles.eventFreeTag}>Free</ThemedText>
+                    ) : event.usd_price ? (
+                      <ThemedText style={styles.priceTag}>${event.usd_price}</ThemedText>
+                    ) : firstPrice?.price != null ? (
+                      <ThemedText style={styles.priceTag}>${firstPrice.price.toFixed(2)}</ThemedText>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <View style={styles.emptyStateWrap}>
+              <ThemedText style={styles.emptyText}>No upcoming events yet.</ThemedText>
+              {eventsError ? <ThemedText style={styles.sectionErrorText}>Debug: {eventsError}</ThemedText> : null}
+            </View>
+          )}
+        </Animated.View>
+
+        {homePageBody ? (
+          <Animated.View style={styles.specialSection} entering={FadeInUp.duration(340).delay(280)}>
+            <View style={styles.sectionHeader}>
+              <View style={[styles.sectionMarker, styles.homeMarker]} />
+              <View style={styles.sectionTitleWrap}>
+                <ThemedText type="defaultSemiBold" style={styles.sectionTitle}>
+                  Home Notes
+                </ThemedText>
+                <ThemedText style={styles.sectionSubtitle}>From this store home page</ThemedText>
+              </View>
+            </View>
+            <View style={styles.specialCard}>
+              {renderSpecialPageContent(homePage, 'home')}
+            </View>
+          </Animated.View>
+        ) : null}
+
+        {newsletterPageBody || newsletterPage?.slug ? (
+          <Animated.View style={styles.section} entering={FadeInUp.duration(340).delay(300)}>
+            <Pressable
+              style={styles.newsletterCard}
+              onPress={() =>
+                openPage(
+                  cleanText(newsletterPage?.slug || ''),
+                  cleanText(newsletterPage?.title || newsletterPage?.Title || 'Newsletter'),
+                  joinPath(storefrontUrl, 'about/newsletter')
+                )
+              }>
+              <ThemedText style={styles.newsletterKicker}>Stay in the loop</ThemedText>
+              <ThemedText type="defaultSemiBold" style={styles.newsletterTitle}>
+                Newsletter
+              </ThemedText>
+              <ThemedText style={styles.newsletterBody} numberOfLines={2}>
+                {firstSentence(newsletterPageBody || 'Subscribe for drops, events, and updates from this store.')}
+              </ThemedText>
+              <ThemedText style={styles.newsletterCta}>Open newsletter page →</ThemedText>
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </ScrollView>
     </ThemedView>
   );
@@ -1016,6 +1654,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emptyStateWrap: {
+    marginTop: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 18,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(120,120,120,0.28)',
+    alignItems: 'center',
     gap: 6,
   },
   sectionErrorText: {
@@ -1061,21 +1707,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#155E75',
   },
-  heroBadge: {
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(217,70,239,0.45)',
-    backgroundColor: 'rgba(217,70,239,0.12)',
-  },
-  heroBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    color: '#86198F',
-    textTransform: 'uppercase',
-  },
+
   heroTitle: {
     fontSize: 28,
     lineHeight: 31,
@@ -1083,6 +1715,11 @@ const styles = StyleSheet.create({
   heroSlug: {
     opacity: 0.65,
     fontSize: 13,
+  },
+  heroTagline: {
+    fontSize: 13,
+    lineHeight: 18,
+    opacity: 0.78,
   },
   heroMeta: {
     opacity: 0.7,
@@ -1093,6 +1730,29 @@ const styles = StyleSheet.create({
   heroDescription: {
     opacity: 0.8,
     lineHeight: 20,
+  },
+  heroActions: {
+    marginTop: 6,
+    gap: 8,
+  },
+  secondaryHeroButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(8,145,178,0.4)',
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  secondaryHeroButtonText: {
+    color: '#0E7490',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  heroUrlHint: {
+    fontSize: 11,
+    opacity: 0.62,
   },
   loadingStage: {
     borderRadius: 16,
@@ -1120,6 +1780,36 @@ const styles = StyleSheet.create({
   heroMarkdown: {
     gap: 8,
   },
+  heroMarkdownHeading: {
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: '700',
+    color: '#0E7490',
+  },
+  heroMarkdownHeadingSmall: {
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  heroListGroup: {
+    gap: 6,
+  },
+  heroListRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  heroListBullet: {
+    width: 16,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#155E75',
+    textAlign: 'center',
+  },
+  heroListText: {
+    flex: 1,
+    opacity: 0.84,
+    lineHeight: 20,
+  },
   markdownInline: {
     fontFamily: 'Manrope',
     fontSize: 14,
@@ -1142,6 +1832,9 @@ const styles = StyleSheet.create({
   section: {
     gap: 8,
   },
+  specialSection: {
+    gap: 10,
+  },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1156,8 +1849,17 @@ const styles = StyleSheet.create({
   blogMarker: {
     backgroundColor: '#22D3EE',
   },
+  productMarker: {
+    backgroundColor: '#10B981',
+  },
   pageMarker: {
     backgroundColor: '#D946EF',
+  },
+  aboutMarker: {
+    backgroundColor: '#0891B2',
+  },
+  homeMarker: {
+    backgroundColor: '#2563EB',
   },
   sectionTitleWrap: {
     flex: 1,
@@ -1184,6 +1886,10 @@ const styles = StyleSheet.create({
   pageBadge: {
     backgroundColor: 'rgba(217,70,239,0.12)',
     borderColor: 'rgba(217,70,239,0.35)',
+  },
+  productBadge: {
+    backgroundColor: 'rgba(16,185,129,0.12)',
+    borderColor: 'rgba(16,185,129,0.35)',
   },
   sectionBadgeText: {
     fontSize: 11,
@@ -1221,12 +1927,105 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  specialCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(8,145,178,0.28)',
+    backgroundColor: 'rgba(239,246,255,0.72)',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 8,
+  },
+  specialCardText: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    lineHeight: 20,
+    opacity: 0.9,
+  },
+  specialHeading: {
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginTop: 2,
+  },
+  specialTextDecorated: {
+    textDecorationLine: 'underline',
+  },
+  specialListGroup: {
+    gap: 8,
+  },
+  specialListRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  specialListBullet: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#1E3A8A',
+    fontWeight: '700',
+    minWidth: 16,
+  },
+  specialListText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+    opacity: 0.9,
+  },
+  newsletterCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(217,70,239,0.32)',
+    backgroundColor: 'rgba(255,252,242,0.95)',
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    gap: 5,
+  },
+  newsletterKicker: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    color: '#A21CAF',
+    textTransform: 'uppercase',
+  },
+  newsletterTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+  },
+  newsletterBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    opacity: 0.82,
+  },
+  newsletterCta: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0891B2',
+  },
+  inlineInfoCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.58)',
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  inlineInfoText: {
+    fontSize: 13,
+    lineHeight: 18,
+    opacity: 0.78,
+  },
   railScroll: {
     marginHorizontal: -18,
   },
   railContent: {
     paddingHorizontal: 18,
     gap: 12,
+  },
+  skeletonCardWrap: {
+    width: 260,
   },
   railCard: {
     width: 260,
@@ -1255,6 +2054,9 @@ const styles = StyleSheet.create({
   },
   pageMarkerSoft: {
     backgroundColor: 'rgba(217,70,239,0.14)',
+  },
+  productMarkerSoft: {
+    backgroundColor: 'rgba(16,185,129,0.12)',
   },
   railImageFallbackText: {
     fontSize: 12,
@@ -1323,24 +2125,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#086c33',
   },
-  primaryButton: {
-    marginTop: 4,
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    backgroundColor: '#D946EF',
-  },
-  primaryButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
   emptyText: {
-    opacity: 0.65,
+    opacity: 0.55,
     fontSize: 13,
     lineHeight: 18,
+    textAlign: 'center',
   },
   errorText: {
     opacity: 0.72,
@@ -1356,5 +2145,31 @@ const styles = StyleSheet.create({
   retryButtonText: {
     color: '#fff',
     fontWeight: '700',
+  },
+  eventMarker: {
+    backgroundColor: '#F59E0B',
+  },
+  eventMarkerSoft: {
+    backgroundColor: 'rgba(245,158,11,0.15)',
+  },
+  eventBadge: {
+    backgroundColor: 'rgba(245,158,11,0.14)',
+    borderColor: 'rgba(245,158,11,0.4)',
+  },
+  eventBadgeText: {
+    color: '#92400E',
+  },
+  eventDateLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    color: '#92400E',
+    textTransform: 'uppercase',
+  },
+  eventFreeTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#065F46',
+    letterSpacing: 0.3,
   },
 });

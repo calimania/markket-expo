@@ -1,12 +1,12 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
-import { useAuthSession, maskToken } from '@/hooks/use-auth-session';
+import { useAuthSession } from '@/hooks/use-auth-session';
 
 function normalizeParam(value: string | string[] | undefined): string {
   if (!value) return '';
@@ -21,6 +21,13 @@ function getHost(url: string): string {
   } catch {
     return '';
   }
+}
+
+function isAllowedWebUrl(url: string, baseHost: string): boolean {
+  const host = getHost(url);
+  if (!host || !baseHost) return false;
+
+  return host === baseHost || host === 'markket.place' || host === 'www.markket.place' || host.endsWith('.markket.place');
 }
 
 function readTokenFromUrl(rawUrl: string): { token: string; source: string } | null {
@@ -69,6 +76,19 @@ const injectedCaptureScript = `
       if (value) emit('localStorage:' + key, value);
     });
 
+    const markketAuthRaw = window.localStorage ? window.localStorage.getItem('markket.auth') : '';
+    if (markketAuthRaw) {
+      try {
+        const parsed = JSON.parse(markketAuthRaw);
+        const jwt = parsed && typeof parsed === 'object' ? parsed.jwt : '';
+        if (typeof jwt === 'string' && jwt.trim()) {
+          emit('localStorage:markket.auth.jwt', jwt.trim());
+        }
+      } catch (_parseErr) {
+        // Ignore malformed markket.auth payloads.
+      }
+    }
+
     const cookie = document.cookie || '';
     if (cookie) {
       cookie.split(';').forEach((part) => {
@@ -85,6 +105,56 @@ const injectedCaptureScript = `
   true;
 })();`;
 
+function buildInjectedSessionScript(
+  session:
+    | {
+      token?: string | null;
+      userId?: number | string;
+      username?: string;
+      email?: string;
+      displayName?: string;
+    }
+    | null
+    | undefined
+): string | undefined {
+  const cleanToken = typeof session?.token === 'string' ? session.token.trim() : '';
+  if (!cleanToken) return undefined;
+
+  const authPayload = {
+    jwt: cleanToken,
+    id: session?.userId,
+    username: session?.username,
+    email: session?.email,
+    displayName: session?.displayName,
+  };
+
+  const payload = JSON.stringify(authPayload);
+  const quotedToken = JSON.stringify(cleanToken);
+
+  return `
+    (() => {
+      try {
+        const token = ${quotedToken};
+        const markketAuth = ${payload};
+
+        if (window.localStorage) {
+          window.localStorage.setItem('markket.auth', JSON.stringify(markketAuth));
+          window.localStorage.setItem('jwt', token);
+          window.localStorage.setItem('token', token);
+          window.localStorage.setItem('auth_token', token);
+        }
+
+        document.cookie = 'jwt=' + encodeURIComponent(token) + '; path=/';
+        document.cookie = 'token=' + encodeURIComponent(token) + '; path=/';
+      } catch (_err) {
+        // Ignore local injection issues and continue with page load.
+      }
+
+      true;
+    })();
+  `;
+}
+
 export default function GenericWebViewScreen() {
   const router = useRouter();
   const { displayBaseUrl } = useAppConfig();
@@ -95,17 +165,18 @@ export default function GenericWebViewScreen() {
   }>();
 
   const [capturedSource, setCapturedSource] = useState<string>('');
+  const lastExternalUrlRef = useRef('');
 
   const targetUrl = normalizeParam(url).trim();
   const captureParam = normalizeParam(captureAuth).trim();
   const shouldCaptureAuth = captureParam !== '0';
+  const baseHost = useMemo(() => getHost(displayBaseUrl), [displayBaseUrl]);
 
   const allowCapture = useMemo(() => {
-    const targetHost = getHost(targetUrl);
-    const baseHost = getHost(displayBaseUrl);
-    if (!targetHost || !baseHost) return false;
-    return targetHost === baseHost || targetHost.endsWith('.markket.place');
-  }, [displayBaseUrl, targetUrl]);
+    return isAllowedWebUrl(targetUrl, baseHost);
+  }, [baseHost, targetUrl]);
+
+  const injectedSessionScript = useMemo(() => buildInjectedSessionScript(session), [session]);
 
   const saveFromSource = useCallback(
     async (token: string, source: string) => {
@@ -114,6 +185,19 @@ export default function GenericWebViewScreen() {
     },
     [saveToken]
   );
+
+  const openExternalUrl = useCallback(async (externalUrl: string) => {
+    const cleanUrl = externalUrl.trim();
+    if (!cleanUrl) return;
+    if (lastExternalUrlRef.current === cleanUrl) return;
+
+    lastExternalUrlRef.current = cleanUrl;
+    try {
+      await Linking.openURL(cleanUrl);
+    } catch {
+      lastExternalUrlRef.current = '';
+    }
+  }, []);
 
   const handleNavigationAttempt = useCallback(
     (request: { url?: string }) => {
@@ -136,9 +220,14 @@ export default function GenericWebViewScreen() {
         return false;
       }
 
+      if (!isAllowedWebUrl(currentUrl, baseHost)) {
+        void openExternalUrl(currentUrl);
+        return false;
+      }
+
       return true;
     },
-    [allowCapture, saveFromSource, shouldCaptureAuth]
+    [allowCapture, baseHost, openExternalUrl, saveFromSource, shouldCaptureAuth]
   );
 
   const handleMessage = useCallback(
@@ -164,7 +253,11 @@ export default function GenericWebViewScreen() {
   if (!targetUrl) {
     return (
       <ThemedView style={styles.centerState}>
-        <ThemedText type="subtitle">Missing URL</ThemedText>
+        <ThemedText type="subtitle">No URL provided</ThemedText>
+        <ThemedText style={styles.centerHint}>Open login from Profile to start auth in WebView.</ThemedText>
+        <Pressable style={styles.centerButton} onPress={() => router.push('/profile' as never)}>
+          <ThemedText style={styles.centerButtonText}>Go to Profile</ThemedText>
+        </Pressable>
       </ThemedView>
     );
   }
@@ -179,7 +272,7 @@ export default function GenericWebViewScreen() {
       <View style={styles.sessionBar}>
         <ThemedText style={styles.sessionText} numberOfLines={1}>
           {session?.token
-            ? `Signed in token: ${maskToken(session.token)}`
+            ? 'Authenticated in app. This page should open with your session.'
             : 'Not signed in yet. Log in on this page to sync app session.'}
         </ThemedText>
         <Pressable style={styles.profileButton} onPress={() => router.push('/profile' as never)}>
@@ -196,7 +289,9 @@ export default function GenericWebViewScreen() {
         startInLoadingState
         onMessage={handleMessage}
         onShouldStartLoadWithRequest={handleNavigationAttempt}
+        injectedJavaScriptBeforeContentLoaded={allowCapture ? injectedSessionScript : undefined}
         injectedJavaScript={shouldCaptureAuth && allowCapture ? injectedCaptureScript : undefined}
+        sharedCookiesEnabled
         renderLoading={() => (
           <View style={styles.loadingState}>
             <ActivityIndicator size="large" />
@@ -270,5 +365,22 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 20,
+    gap: 10,
+  },
+  centerHint: {
+    textAlign: 'center',
+    opacity: 0.7,
+    lineHeight: 20,
+  },
+  centerButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.45)',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  centerButtonText: {
+    fontWeight: '700',
   },
 });
