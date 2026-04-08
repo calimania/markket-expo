@@ -46,3 +46,4 @@ app-example
 
 *.draft.*
 .idea
+_logs

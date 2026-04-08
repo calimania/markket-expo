@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -10,7 +10,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAppConfig } from '@/hooks/use-app-config';
-import { maskToken, useAuthSession } from '@/hooks/use-auth-session';
+import { useAuthSession } from '@/hooks/use-auth-session';
 import { apiGet, apiPost } from '@/lib/api';
 
 type MeResponse = {
@@ -45,6 +45,10 @@ type StoreLookupResponse = {
   }>;
 };
 
+const WHATSAPP_MAGIC_NUMBER = '15186291830';
+const WHATSAPP_MAGIC_LABEL = '+1 (518) 629 1830';
+const WHATSAPP_MAGIC_TEXT = 'magic';
+
 function cleanText(value: string | null | undefined): string {
   if (!value) return '';
   return value.trim();
@@ -68,7 +72,7 @@ export default function ProfileScreen() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [requestingMagic, setRequestingMagic] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showEmailMagicForm, setShowEmailMagicForm] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [displayNameInput, setDisplayNameInput] = useState('');
@@ -76,12 +80,11 @@ export default function ProfileScreen() {
   const [magicEmail, setMagicEmail] = useState('');
   const [magicStoreId, setMagicStoreId] = useState('');
 
-  const nextPlatform = Platform.OS === 'android' ? 'android' : 'ios';
-  const loginUrl = `${displayBaseUrl}auth/magic?next=${nextPlatform}`;
   const dashboardUrl = `${displayBaseUrl}dashboard/store`;
   const settingsUrl = `${displayBaseUrl}dashboard/settings`;
   const requestMagicUrl = `${displayBaseUrl}api/markket?path=/api/auth-magic/request`;
   const updateProfileUrl = `${displayBaseUrl}api/markket/user`;
+  const whatsappMagicUrl = `https://wa.me/${WHATSAPP_MAGIC_NUMBER}?text=${encodeURIComponent(WHATSAPP_MAGIC_TEXT)}`;
 
   const identityLabel = useMemo(() => {
     return cleanText(displayNameInput || me?.displayName || me?.username || me?.email || '') || 'Markket Member';
@@ -135,20 +138,10 @@ export default function ProfileScreen() {
   }, [magicEmail, magicStoreId]);
 
   const storeIdStatus = useMemo(() => {
-    if (magicStoreId.trim()) {
-      return `Store resolved from slug \"${defaultStoreSlug}\": ${magicStoreId}`;
-    }
-
-    if (defaultStoreSlug) {
-      return `Resolving store ID from slug \"${defaultStoreSlug}\"...`;
-    }
-
-    return 'No default store slug configured yet.';
+    if (magicStoreId.trim()) return 'Email login is ready.';
+    if (defaultStoreSlug) return 'Setting up email login...';
+    return 'Email login is temporarily unavailable.';
   }, [defaultStoreSlug, magicStoreId]);
-
-  const openLogin = () => {
-    router.push({ pathname: '/web', params: { url: loginUrl, captureAuth: '1' } } as never);
-  };
 
   const openDashboard = () => {
     router.push({ pathname: '/web', params: { url: dashboardUrl, captureAuth: '1' } } as never);
@@ -158,11 +151,32 @@ export default function ProfileScreen() {
     router.push({ pathname: '/web', params: { url: settingsUrl, captureAuth: '1' } } as never);
   };
 
+  const openWhatsAppMagic = async () => {
+    try {
+      await Linking.openURL(whatsappMagicUrl);
+    } catch {
+      Alert.alert('Could not open WhatsApp', `Message ${WHATSAPP_MAGIC_LABEL} with "${WHATSAPP_MAGIC_TEXT}" to get your login link.`);
+    }
+  };
+
   const clear = async () => {
     await clearSession();
     setMe(null);
     setDisplayNameInput('');
     setBioInput('');
+  };
+
+  const confirmLogout = () => {
+    Alert.alert('Log out?', 'This removes your saved session from this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: () => {
+          void clear();
+        },
+      },
+    ]);
   };
 
   const checkMe = async () => {
@@ -369,7 +383,7 @@ export default function ProfileScreen() {
 
       Alert.alert(
         'Magic link requested',
-        'Check your inbox for the login link. You can also send "magic" via WhatsApp to +1 (518) 629 1830.'
+        `Check your inbox for the login link. If email delivery is slow, message ${WHATSAPP_MAGIC_LABEL} on WhatsApp with "${WHATSAPP_MAGIC_TEXT}" for the faster path.`
       );
     } catch (err) {
       Alert.alert('Could not request link', err instanceof Error ? err.message : 'Unknown API error');
@@ -395,7 +409,7 @@ export default function ProfileScreen() {
           Account
         </ThemedText>
         <ThemedText style={styles.subtitle}>
-          Manage your login and profile details from one place.
+          Manage your login and profile details from one place. WhatsApp is the fastest way to get back into your account.
         </ThemedText>
 
         <View style={styles.heroCard}>
@@ -424,11 +438,22 @@ export default function ProfileScreen() {
 
           {session?.token ? (
             <View style={styles.heroActionWrap}>
-              <Button label="Store Owner Dashboard (Soon)" variant="secondary" disabled />
-              <Button label="Create a Store (Soon)" variant="ghost" disabled />
+              <Button label="Open Dashboard" variant="secondary" onPress={openDashboard} />
+              <Button label="Account Settings" variant="ghost" onPress={openSettingsWeb} />
+              <Button label="Log Out" variant="ghost" onPress={confirmLogout} />
             </View>
           ) : (
-            <Button label="Open Magic Login" onPress={openLogin} />
+              <View style={styles.heroActionWrap}>
+                <Button label="Continue With WhatsApp" onPress={openWhatsAppMagic} />
+                <Button
+                  label={showEmailMagicForm ? 'Hide Email Login' : 'Use Email Magic Link'}
+                  variant="secondary"
+                  onPress={() => setShowEmailMagicForm((prev) => !prev)}
+                />
+                <ThemedText style={styles.heroHint}>
+                  Send "magic" to {WHATSAPP_MAGIC_LABEL}. It usually resolves faster than email on mobile.
+                </ThemedText>
+              </View>
           )}
         </View>
 
@@ -488,36 +513,9 @@ export default function ProfileScreen() {
           </View>
         ) : null}
 
-        {session?.token ? (
-          <View style={styles.comingSoonCard}>
-            <View style={styles.comingSoonBlob} />
-            <ThemedText type="defaultSemiBold">Store Tools</ThemedText>
-            <ThemedText style={styles.infoLine}>Owner tools will live here once store flows move fully native.</ThemedText>
-            <Pressable style={[styles.teaserButton, styles.teaserButtonDisabled]} disabled>
-              <ThemedText style={styles.teaserButtonText}>Store Owner Dashboard</ThemedText>
-            </Pressable>
-            <Pressable style={[styles.teaserButton, styles.teaserButtonDisabled]} disabled>
-              <ThemedText style={styles.teaserButtonText}>Create a Store</ThemedText>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {session?.token ? (
-          <View style={styles.comingSoonCardSecondary}>
-            <ThemedText type="defaultSemiBold">Payouts & Payments</ThemedText>
-            <ThemedText style={styles.infoLine}>Payout settings, saved methods, and payment preferences are coming soon.</ThemedText>
-            <Pressable style={[styles.teaserButton, styles.teaserButtonSecondaryDisabled]} disabled>
-              <ThemedText style={styles.teaserButtonSecondaryText}>Payment Methods</ThemedText>
-            </Pressable>
-            <Pressable style={[styles.teaserButton, styles.teaserButtonSecondaryDisabled]} disabled>
-              <ThemedText style={styles.teaserButtonSecondaryText}>Payout Settings</ThemedText>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {!session?.token ? (
+        {!session?.token && showEmailMagicForm ? (
           <View style={styles.card}>
-            <ThemedText type="defaultSemiBold">Request Magic Link</ThemedText>
+            <ThemedText type="defaultSemiBold">Email Magic Link</ThemedText>
             <ThemedText style={styles.infoLine}>{storeIdStatus}</ThemedText>
             <Input
               value={magicEmail}
@@ -532,35 +530,6 @@ export default function ProfileScreen() {
               onPress={requestMagicLink}
               disabled={!canRequestMagic || requestingMagic}
             />
-            <ThemedText style={styles.infoLine}>
-              WhatsApp fallback: send "magic" to +1 (518) 629 1830 and we will reply with your login link.
-            </ThemedText>
-          </View>
-        ) : null}
-
-        <Pressable style={styles.advancedToggle} onPress={() => setShowAdvanced((prev) => !prev)}>
-          <ThemedText style={styles.advancedToggleText}>{showAdvanced ? 'Hide Dev Tools' : 'Show Dev Tools'}</ThemedText>
-        </Pressable>
-
-        {showAdvanced ? (
-          <View style={styles.card}>
-            <ThemedText type="defaultSemiBold">Dev Session + Diagnostics</ThemedText>
-            <ThemedText style={styles.infoLine}>
-              {session?.token ? `Token: ${maskToken(session.token)}` : 'No session token yet'}
-            </ThemedText>
-            <ThemedText style={styles.infoLine}>Source: {session?.source || 'none'}</ThemedText>
-            <ThemedText style={styles.infoLine}>Updated: {session?.updatedAt || 'never'}</ThemedText>
-            <View style={styles.buttonRow}>
-              <Pressable style={[styles.button, styles.secondaryButton]} onPress={checkMe}>
-                <ThemedText>{checking ? 'Loading /users/me...' : 'Refresh /users/me'}</ThemedText>
-              </Pressable>
-              <Pressable style={[styles.button, styles.secondaryButton]} onPress={openDashboard}>
-                <ThemedText>Open Dashboard WebView</ThemedText>
-              </Pressable>
-              <Pressable style={[styles.button, styles.secondaryButton]} onPress={clear}>
-                <ThemedText>Clear Session</ThemedText>
-              </Pressable>
-            </View>
           </View>
         ) : null}
       </ScrollView>
@@ -676,6 +645,11 @@ const styles = StyleSheet.create({
   heroActionWrap: {
     gap: 8,
   },
+  heroHint: {
+    fontSize: 13,
+    lineHeight: 19,
+    opacity: 0.82,
+  },
   cardHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -732,100 +706,6 @@ const styles = StyleSheet.create({
   summaryChipValue: {
     fontSize: 14,
     lineHeight: 20,
-  },
-  comingSoonCard: {
-    marginTop: 8,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(217,70,239,0.24)',
-    backgroundColor: 'rgba(255,250,245,0.95)',
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    gap: 10,
-    overflow: 'hidden',
-  },
-  comingSoonBlob: {
-    position: 'absolute',
-    width: 88,
-    height: 88,
-    borderRadius: 999,
-    backgroundColor: 'rgba(217,70,239,0.08)',
-    top: -20,
-    right: -12,
-  },
-  comingSoonCardSecondary: {
-    marginTop: 8,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(234,179,8,0.24)',
-    backgroundColor: 'rgba(255,252,235,0.96)',
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    gap: 10,
-  },
-  teaserButton: {
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  teaserButtonDisabled: {
-    backgroundColor: 'rgba(217,70,239,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(217,70,239,0.18)',
-  },
-  teaserButtonText: {
-    color: '#A21CAF',
-    opacity: 0.55,
-    fontWeight: '700',
-  },
-  teaserButtonSecondaryDisabled: {
-    backgroundColor: 'rgba(234,179,8,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(234,179,8,0.2)',
-  },
-  teaserButtonSecondaryText: {
-    color: '#A16207',
-    opacity: 0.55,
-    fontWeight: '700',
-  },
-  advancedToggle: {
-    marginTop: 4,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(120,120,120,0.35)',
-    backgroundColor: 'rgba(255,255,255,0.8)',
-  },
-  advancedToggleText: {
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  buttonRow: {
-    marginTop: 4,
-    gap: 10,
-  },
-  button: {
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryButton: {
-    backgroundColor: '#D946EF',
-  },
-  primaryButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  secondaryButton: {
-    borderWidth: 1,
-    borderColor: 'rgba(120,120,120,0.45)',
   },
   loader: {
     marginVertical: 4,

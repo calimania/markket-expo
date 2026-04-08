@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   ActivityIndicator,
@@ -11,6 +11,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
   type ListRenderItem,
 } from 'react-native';
@@ -87,7 +88,7 @@ type Product = {
   slug?: string;
   Name?: string;
   updatedAt?: string;
-  PRICES?: Array<{ price?: number; currency?: string }>;
+  PRICES?: { price?: number; currency?: string }[];
   SEO?: {
     metaUrl?: string | null;
     socialImage?: {
@@ -98,7 +99,7 @@ type Product = {
       };
     } | null;
   } | null;
-  stores?: Array<{ slug?: string; title?: string }> | null;
+  stores?: { slug?: string; title?: string }[] | null;
 };
 
 type ProductsApiResponse = {
@@ -114,7 +115,7 @@ type Event = {
   endDate?: string | null;
   usd_price?: number | null;
   maxCapacity?: number | null;
-  PRICES?: Array<{ price?: number; currency?: string }> | null;
+  PRICES?: { price?: number; currency?: string }[] | null;
   Thumbnail?: {
     url?: string;
     formats?: {
@@ -132,7 +133,7 @@ type Event = {
       };
     } | null;
   } | null;
-  stores?: Array<{ slug?: string; title?: string }> | null;
+  stores?: { slug?: string; title?: string }[] | null;
 };
 
 type EventsApiResponse = {
@@ -172,8 +173,18 @@ type StoresApiResponse = {
   };
 };
 
-function createStoresPath(query: string, page: number): string {
+function createStoresPath(query: string, page: number, searchTerm?: string): string {
   const params = new URLSearchParams(query);
+
+  const normalizedSearch = (searchTerm || '').trim();
+  if (normalizedSearch) {
+    params.set('filters[$or][0][title][$containsi]', normalizedSearch);
+    params.set('filters[$or][1][slug][$containsi]', normalizedSearch);
+  } else {
+    params.delete('filters[$or][0][title][$containsi]');
+    params.delete('filters[$or][1][slug][$containsi]');
+  }
+
   params.set('pagination[page]', String(page));
   params.set('sort[0]', 'updatedAt:desc');
   const search = params.toString();
@@ -236,6 +247,11 @@ export default function HomeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(1);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchDraft, setSearchDraft] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
+  const searchInputRef = useRef<TextInput | null>(null);
 
   const loadStores = useCallback(async (targetPage: number, mode: 'replace' | 'append' = 'replace') => {
     if (!ready) return;
@@ -243,7 +259,7 @@ export default function HomeScreen() {
     setError(null);
 
     try {
-      const result = await apiGet<StoresApiResponse>(createStoresPath(storesQuery, targetPage), {
+      const result = await apiGet<StoresApiResponse>(createStoresPath(storesQuery, targetPage, activeSearch), {
         baseUrl: apiBaseUrl,
       });
 
@@ -274,7 +290,7 @@ export default function HomeScreen() {
       setRefreshing(false);
       setLoadingMore(false);
     }
-  }, [apiBaseUrl, ready, storesQuery]);
+  }, [activeSearch, apiBaseUrl, ready, storesQuery]);
 
   useEffect(() => {
     if (!ready) return;
@@ -284,7 +300,7 @@ export default function HomeScreen() {
     setPage(1);
     setPageCount(1);
     loadStores(1, 'replace');
-  }, [apiBaseUrl, loadStores, ready, storesQuery]);
+  }, [apiBaseUrl, loadStores, ready, storesQuery, activeSearch]);
 
   const [activeStores, setActiveStores] = useState<Store[]>([]);
   const [activeStoresLoading, setActiveStoresLoading] = useState(true);
@@ -301,7 +317,7 @@ export default function HomeScreen() {
       })
       .catch(() => { })
       .finally(() => setActiveStoresLoading(false));
-  }, [apiBaseUrl, ready]);
+  }, [apiBaseUrl, ready, refreshKey]);
 
   const activeSortedStores = useMemo(
     () =>
@@ -312,6 +328,7 @@ export default function HomeScreen() {
   const featuredStore = activeSortedStores[0] ?? null;
   const thumbStores = activeSortedStores.slice(1, 9);
   const listStores = stores;
+  const isSearchActive = activeSearch.trim().length > 0;
 
   const [articles, setArticles] = useState<Article[]>([]);
   const [articlesLoading, setArticlesLoading] = useState(true);
@@ -330,7 +347,7 @@ export default function HomeScreen() {
       })
       .catch(() => setArticles([]))
       .finally(() => setArticlesLoading(false));
-  }, [apiBaseUrl, ready]);
+  }, [apiBaseUrl, ready, refreshKey]);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
@@ -349,7 +366,7 @@ export default function HomeScreen() {
       })
       .catch(() => setProducts([]))
       .finally(() => setProductsLoading(false));
-  }, [apiBaseUrl, ready]);
+  }, [apiBaseUrl, ready, refreshKey]);
 
   const [pages, setPages] = useState<Page[]>([]);
   const [pagesLoading, setPagesLoading] = useState(true);
@@ -368,7 +385,7 @@ export default function HomeScreen() {
       })
       .catch(() => setPages([]))
       .finally(() => setPagesLoading(false));
-  }, [apiBaseUrl, ready]);
+  }, [apiBaseUrl, ready, refreshKey]);
 
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -397,7 +414,7 @@ export default function HomeScreen() {
         setEvents([]);
       })
       .finally(() => setEventsLoading(false));
-  }, [apiBaseUrl, ready]);
+  }, [apiBaseUrl, ready, refreshKey]);
 
   // Debounce loading states to avoid flashing skeletons on quick loads (>400ms)
   const [debouncedActiveStoresLoading, setDebouncedActiveStoresLoading] = useState(true);
@@ -453,8 +470,29 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
+    setRefreshKey((k) => k + 1);
     loadStores(1, 'replace');
   }, [loadStores]);
+
+  const onSubmitSearch = useCallback(() => {
+    const next = searchDraft.trim();
+    setActiveSearch(next);
+  }, [searchDraft]);
+
+  const clearSearch = useCallback(() => {
+    setSearchDraft('');
+    setActiveSearch('');
+  }, []);
+
+  useEffect(() => {
+    if (!showSearch) return;
+
+    const timer = setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 60);
+
+    return () => clearTimeout(timer);
+  }, [showSearch]);
 
   const onEndReached = useCallback(() => {
     if (loading || refreshing || loadingMore) return;
@@ -593,12 +631,45 @@ export default function HomeScreen() {
       <Animated.View
         style={[styles.header, { paddingTop: insets.top + 16 }]}
         entering={FadeIn.duration(360)}>
-        <ThemedText type="title" style={styles.headerTitle}>
-          markket
-        </ThemedText>
-        <ThemedText style={styles.headerSubtitle}>
-          Featured storefronts sorted by last updated
-        </ThemedText>
+        <View style={styles.headerRow}>
+          <View style={styles.headerTextWrap}>
+            <ThemedText type="title" style={styles.headerTitle}>
+              markket
+            </ThemedText>
+          </View>
+          <Pressable
+            style={styles.searchToggle}
+            onPress={() => {
+              if (showSearch) {
+                setShowSearch(false);
+                clearSearch();
+                return;
+              }
+              setShowSearch(true);
+            }}>
+            <ThemedText style={styles.searchToggleText}>{showSearch ? '✕' : '⌕'}</ThemedText>
+          </Pressable>
+        </View>
+
+        {showSearch ? (
+          <Animated.View entering={FadeInDown.duration(220)} style={styles.searchWrap}>
+            <TextInput
+              ref={searchInputRef}
+              value={searchDraft}
+              onChangeText={setSearchDraft}
+              placeholder="Search stores by name or slug..."
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              onSubmitEditing={onSubmitSearch}
+              style={styles.searchInput}
+              placeholderTextColor="rgba(15,23,42,0.45)"
+            />
+            <Pressable style={styles.searchButton} onPress={onSubmitSearch}>
+              <ThemedText style={styles.searchButtonText}>Go</ThemedText>
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </Animated.View>
 
       <FlatList
@@ -611,8 +682,9 @@ export default function HomeScreen() {
         onEndReached={onEndReached}
         onEndReachedThreshold={0.4}
         ListHeaderComponent={
-          <View style={styles.heroSection}>
-            {featuredStore ? (
+          !isSearchActive ? (
+            <View style={styles.heroSection}>
+              {featuredStore ? (
               <>
                 <ThemedText type="label" style={styles.heroLabel}>Our Fav</ThemedText>
                 <Pressable
@@ -686,73 +758,73 @@ export default function HomeScreen() {
                   </ScrollView>
                 ) : null}
               </>
-            ) : debouncedActiveStoresLoading ? (
+              ) : debouncedActiveStoresLoading ? (
               <>
                 <ThemedText type="label" style={styles.heroLabel}>Our Fav</ThemedText>
                 <SkeletonCard />
               </>
-            ) : null}
+              ) : null}
 
-            <View style={styles.carouselSection}>
-              <View style={styles.carouselHeader}>
-                <ThemedText type="label" style={styles.carouselLabel}>Latest Articles</ThemedText>
-                <ThemedText type="mono" style={styles.carouselMeta}>across all stores</ThemedText>
+              <View style={styles.carouselSection}>
+                <View style={styles.carouselHeader}>
+                  <ThemedText type="label" style={styles.carouselLabel}>Latest Articles</ThemedText>
+                  <ThemedText type="mono" style={styles.carouselMeta}>across all stores</ThemedText>
+                </View>
+                {debouncedArticlesLoading ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.carouselContent}>
+                    {[0, 1, 2, 3].map((i) => (
+                      <View key={i} style={styles.articleSkeleton}>
+                        <SkeletonBlock height={120} radius={16} />
+                        <SkeletonBlock width="60%" height={14} radius={8} />
+                        <SkeletonBlock width="90%" height={14} radius={8} />
+                      </View>
+                    ))}
+                  </ScrollView>
+                ) : articles.length === 0 ? null : (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.carouselContent}>
+                    {articles.map((article) => {
+                      const coverUrl =
+                        getThumbnailUrl(article.cover ?? null) ??
+                        getThumbnailUrl(article.SEO?.socialImage ?? null) ?? null;
+                      return (
+                        <Pressable
+                          key={article.id}
+                          style={({ pressed }) => [styles.articleCard, pressed && styles.cardPressed]}
+                          onPress={() =>
+                            article.slug && article.store?.slug
+                              ? router.push({ pathname: '/article/[slug]', params: { slug: article.slug, store: article.store.slug } } as never)
+                              : null
+                          }>
+                          <View style={styles.articleCover}>
+                            {coverUrl ? (
+                              <Image source={{ uri: coverUrl }} style={styles.articleCoverImage} contentFit="cover" transition={200} />
+                            ) : (
+                              <View style={[styles.articleCoverImage, styles.articleCoverFallback]} />
+                            )}
+                            {article.store?.title ? (
+                              <View style={styles.articleStoreBadge}>
+                                <ThemedText style={styles.articleStoreBadgeText} numberOfLines={1}>
+                                  {article.store.title}
+                                </ThemedText>
+                              </View>
+                            ) : null}
+                          </View>
+                          <ThemedText numberOfLines={2} style={styles.articleTitle}>
+                            {article.Title ?? 'Untitled'}
+                          </ThemedText>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )}
               </View>
-              {debouncedArticlesLoading ? (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.carouselContent}>
-                  {[0, 1, 2, 3].map((i) => (
-                    <View key={i} style={styles.articleSkeleton}>
-                      <SkeletonBlock height={120} radius={16} />
-                      <SkeletonBlock width="60%" height={14} radius={8} />
-                      <SkeletonBlock width="90%" height={14} radius={8} />
-                    </View>
-                  ))}
-                </ScrollView>
-              ) : articles.length === 0 ? null : (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.carouselContent}>
-                  {articles.map((article) => {
-                    const coverUrl =
-                      getThumbnailUrl(article.cover ?? null) ??
-                      getThumbnailUrl(article.SEO?.socialImage ?? null) ?? null;
-                    return (
-                      <Pressable
-                        key={article.id}
-                        style={({ pressed }) => [styles.articleCard, pressed && styles.cardPressed]}
-                        onPress={() =>
-                          article.slug && article.store?.slug
-                            ? router.push({ pathname: '/article/[slug]', params: { slug: article.slug, store: article.store.slug } } as never)
-                            : null
-                        }>
-                        <View style={styles.articleCover}>
-                          {coverUrl ? (
-                            <Image source={{ uri: coverUrl }} style={styles.articleCoverImage} contentFit="cover" transition={200} />
-                          ) : (
-                            <View style={[styles.articleCoverImage, styles.articleCoverFallback]} />
-                          )}
-                          {article.store?.title ? (
-                            <View style={styles.articleStoreBadge}>
-                              <ThemedText style={styles.articleStoreBadgeText} numberOfLines={1}>
-                                {article.store.title}
-                              </ThemedText>
-                            </View>
-                          ) : null}
-                        </View>
-                        <ThemedText numberOfLines={2} style={styles.articleTitle}>
-                          {article.Title ?? 'Untitled'}
-                        </ThemedText>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </View>
-            <View style={styles.carouselSection}>
+              <View style={styles.carouselSection}>
               <View style={styles.carouselHeader}>
                 <ThemedText type="label" style={styles.carouselLabel}>Discover New Products</ThemedText>
                 <ThemedText type="mono" style={styles.carouselMeta}>across all stores</ThemedText>
@@ -969,12 +1041,34 @@ export default function HomeScreen() {
             {listStores.length ? (
               <ThemedText type="label" style={styles.collectionLabel}>All Stores</ThemedText>
             ) : null}
-          </View>
+
+              {activeSearch ? (
+                <View style={styles.searchResultRow}>
+                  <ThemedText style={styles.searchResultText}>{`Results for "${activeSearch}"`}</ThemedText>
+                  <Pressable onPress={clearSearch} style={styles.searchResultClear}>
+                    <ThemedText style={styles.searchResultClearText}>Clear</ThemedText>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <View style={styles.searchModeHeader}>
+              <ThemedText type="label" style={styles.collectionLabel}>Store Results</ThemedText>
+              {activeSearch ? (
+                <View style={styles.searchResultRow}>
+                  <ThemedText style={styles.searchResultText}>{`Results for "${activeSearch}"`}</ThemedText>
+                  <Pressable onPress={clearSearch} style={styles.searchResultClear}>
+                    <ThemedText style={styles.searchResultClearText}>Clear</ThemedText>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          )
         }
         ListEmptyComponent={
           <ThemedView style={styles.emptyState}>
             <ThemedText type="subtitle">No stores found</ThemedText>
-            <ThemedText>Try pulling down to refresh.</ThemedText>
+            <ThemedText>{activeSearch ? 'No matching stores. Try another search term.' : 'Try pulling down to refresh.'}</ThemedText>
           </ThemedView>
         }
         ListFooterComponent={
@@ -999,6 +1093,15 @@ const styles = StyleSheet.create({
     paddingTop: 22,
     paddingBottom: 14,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  headerTextWrap: {
+    flex: 1,
+  },
   headerTitle: {
     fontSize: 30,
     lineHeight: 32,
@@ -1011,6 +1114,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textTransform: 'uppercase',
     letterSpacing: 1,
+  },
+  searchToggle: {
+    width: 38,
+    height: 38,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  searchToggleText: {
+    fontSize: 18,
+    lineHeight: 18,
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  searchWrap: {
+    marginTop: 12,
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  searchInput: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#0F172A',
+  },
+  searchButton: {
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(34,211,238,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(8,145,178,0.45)',
+  },
+  searchButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0E7490',
   },
   quickOpenButton: {
     marginTop: 10,
@@ -1105,6 +1257,32 @@ const styles = StyleSheet.create({
   collectionLabel: {
     marginTop: 8,
     opacity: 0.75,
+  },
+  searchModeHeader: {
+    marginBottom: 8,
+  },
+  searchResultRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  searchResultText: {
+    fontSize: 12,
+    opacity: 0.75,
+  },
+  searchResultClear: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(120,120,120,0.35)',
+  },
+  searchResultClearText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   carouselSection: {
     marginTop: Spacing.xl,
