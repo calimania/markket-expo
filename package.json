@@ -1,5 +1,5 @@
 {
-  "name": "markket-app",
+  "name": "markket",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
@@ -23,6 +23,7 @@
     "expo-font": "~14.0.11",
     "expo-haptics": "~15.0.8",
     "expo-image": "~3.0.11",
+    "expo-image-picker": "~17.0.10",
     "expo-linking": "~8.0.11",
     "expo-router": "~6.0.23",
     "expo-secure-store": "~15.0.8",

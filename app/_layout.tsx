@@ -72,7 +72,6 @@ export default function RootLayout() {
             <Stack.Screen name="page/[slug]" options={{ title: 'Page' }} />
             <Stack.Screen name="legal/[kind]" options={{ title: 'Legal' }} />
             <Stack.Screen name="profile" options={{ title: 'Profile' }} />
-            <Stack.Screen name="(dev)/design-system" options={{ title: 'Design System' }} />
             <Stack.Screen
               name="store/[slug]"
               options={{

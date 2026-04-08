@@ -7,12 +7,23 @@ type AuthSession = {
   token: string;
   source: string;
   updatedAt: string;
+  userId?: number | string;
+  username?: string;
+  email?: string;
+  displayName?: string;
+};
+
+type AuthIdentity = {
+  userId?: number | string;
+  username?: string;
+  email?: string;
+  displayName?: string;
 };
 
 type AuthSessionContextValue = {
   session: AuthSession | null;
   ready: boolean;
-  saveToken: (token: string, source: string) => Promise<void>;
+  saveToken: (token: string, source: string, identity?: AuthIdentity) => Promise<void>;
   clearSession: () => Promise<void>;
 };
 
@@ -21,6 +32,22 @@ const AuthSessionContext = createContext<AuthSessionContextValue | null>(null);
 function normalizeToken(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value.trim();
+}
+
+function normalizeText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeUserId(value: unknown): number | string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    return /^\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+  }
+  return undefined;
 }
 
 export function AuthSessionProvider({ children }: { children: ReactNode }) {
@@ -43,6 +70,10 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
           token,
           source: typeof parsed.source === 'string' ? parsed.source : 'unknown',
           updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+          userId: normalizeUserId(parsed.userId),
+          username: normalizeText(parsed.username),
+          email: normalizeText(parsed.email),
+          displayName: normalizeText(parsed.displayName),
         });
       } catch {
         // Ignore malformed persisted session data and start clean.
@@ -58,7 +89,7 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const saveToken = useCallback(async (tokenInput: string, source: string) => {
+  const saveToken = useCallback(async (tokenInput: string, source: string, identity?: AuthIdentity) => {
     const token = normalizeToken(tokenInput);
     if (!token) return;
 
@@ -66,6 +97,10 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
       token,
       source: source || 'unknown',
       updatedAt: new Date().toISOString(),
+      userId: normalizeUserId(identity?.userId),
+      username: normalizeText(identity?.username),
+      email: normalizeText(identity?.email),
+      displayName: normalizeText(identity?.displayName),
     };
 
     setSession(next);

@@ -226,7 +226,7 @@ function formatEventDate(dateStr?: string | null): string {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { apiBaseUrl, displayBaseUrl, defaultStoreSlug, linkOpenMode, ready, storesQuery } = useAppConfig();
+  const { apiBaseUrl, displayBaseUrl, linkOpenMode, ready, storesQuery } = useAppConfig();
   const insets = useSafeAreaInsets();
 
   const [stores, setStores] = useState<Store[]>([]);
@@ -599,16 +599,6 @@ export default function HomeScreen() {
         <ThemedText style={styles.headerSubtitle}>
           Featured storefronts sorted by last updated
         </ThemedText>
-
-        {defaultStoreSlug ? (
-          <Pressable
-            style={styles.quickOpenButton}
-            onPress={() => openStoreBySlug(defaultStoreSlug)}>
-            <ThemedText style={styles.quickOpenText}>
-              Open my store: /{defaultStoreSlug}
-            </ThemedText>
-          </Pressable>
-        ) : null}
       </Animated.View>
 
       <FlatList

@@ -45,3 +45,4 @@ app-example
 .vscode
 
 *.draft.*
+.idea
