@@ -2,7 +2,7 @@
   "expo": {
     "name": "Markkët",
     "slug": "markket",
-    "version": "1.0.0",
+    "version": "1.3.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "markket",
@@ -16,8 +16,8 @@
       ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSPhotoLibraryUsageDescription": "Markket uses your photo library so you can upload a profile image.",
-        "NSCameraUsageDescription": "Markket uses the camera so you can take a profile image."
+        "NSPhotoLibraryUsageDescription": "Markket uses your photo library so you can choose, share, and save store images.",
+        "NSCameraUsageDescription": "Markket uses the camera so you can capture and update store images."
       }
     },
     "android": {
@@ -71,8 +71,15 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Markket uses your photo library so you can upload a profile image.",
-          "cameraPermission": "Markket uses the camera so you can take a profile image."
+          "photosPermission": "Markket uses your photo library so you can choose and update store images.",
+          "cameraPermission": "Markket uses the camera so you can capture and update store images."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Markket uses your photo library so you can export and save your store images.",
+          "savePhotosPermission": "Markket saves selected store images to your photo library when you choose Save to Camera Roll."
         }
       ],
       "expo-secure-store"

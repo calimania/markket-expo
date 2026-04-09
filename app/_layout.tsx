@@ -79,6 +79,27 @@ export default function RootLayout() {
                 animation: 'slide_from_right',
               }}
             />
+            <Stack.Screen
+              name="store/[storeSlug]/content"
+              options={{
+                title: 'Store Content',
+                animation: 'slide_from_right',
+              }}
+            />
+            <Stack.Screen
+              name="store/[storeSlug]/media"
+              options={{
+                title: 'Media Studio',
+                animation: 'slide_from_right',
+              }}
+            />
+            <Stack.Screen
+              name="store/[storeSlug]/composer"
+              options={{
+                title: 'Composer',
+                animation: 'slide_from_right',
+              }}
+            />
             <Stack.Screen name="web" options={{ title: 'Preview Link' }} />
             <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
           </Stack>
