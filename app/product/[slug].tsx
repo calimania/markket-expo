@@ -337,7 +337,7 @@ function renderMarkdownTextBlocks(value: string, keyPrefix: string): ReactNode[]
 function resolveProductImage(product: ProductRecord | null): string {
   if (!product) return '';
 
-  const slides = product.Slides ?? product.slides ?? [];
+  const slides = dedupeImageAssets(product.Slides ?? product.slides ?? []);
   const firstSlide = Array.isArray(slides) ? slides[0] : null;
 
   return cleanText(
@@ -350,10 +350,28 @@ function resolveProductImage(product: ProductRecord | null): string {
   );
 }
 
+function dedupeImageAssets<T extends { url?: string; formats?: { medium?: { url?: string }; small?: { url?: string }; thumbnail?: { url?: string } } }>(
+  items: T[] | null | undefined
+): T[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  items.forEach((item, index) => {
+    const identity = cleanText(item.formats?.medium?.url || item.formats?.small?.url || item.formats?.thumbnail?.url || item.url || '') || `index:${index}`;
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    deduped.push(item);
+  });
+
+  return deduped;
+}
+
 function resolveProductGallery(product: ProductRecord | null): string[] {
   if (!product) return [];
 
-  const slides = product.Slides ?? product.slides ?? [];
+  const slides = dedupeImageAssets(product.Slides ?? product.slides ?? []);
 
   const urls = [
     ...slides.map((slide) => resolveImageAssetUrl(slide)),
@@ -489,7 +507,7 @@ export default function ProductScreen() {
 
     const debugPrices = product.PRICES ?? product.prices ?? [];
     const debugGallery = resolveProductGallery(product);
-    const slides = product.Slides ?? product.slides ?? [];
+    const slides = dedupeImageAssets(product.Slides ?? product.slides ?? []);
 
     console.log('[product-debug] resolved payload', {
       slug: product.slug,

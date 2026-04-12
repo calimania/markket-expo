@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -99,6 +100,7 @@ export default function StoresScreen() {
 
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [loadingStores, setLoadingStores] = useState(false);
+  const canCreateStore = stores.length < 2;
 
   const openStoreEditor = useCallback(
     (storeSlug?: string) => {
@@ -108,10 +110,15 @@ export default function StoresScreen() {
       }
 
       const storeEditorUrl = `${displayBaseUrl}tienda/${storeSlug}/store?display=embed`;
-      router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0' } } as never);
+      router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0', closeOnExit: '1' } } as never);
     },
     [displayBaseUrl, router]
   );
+
+  const openCreateStore = useCallback(() => {
+    const createStoreUrl = `${displayBaseUrl}tienda/new?display=embed`;
+    router.push({ pathname: '/web', params: { url: createStoreUrl, captureAuth: '0' } } as never);
+  }, [displayBaseUrl, router]);
 
   const openStoreContentList = useCallback(
     (storeSlug?: string) => {
@@ -258,6 +265,14 @@ export default function StoresScreen() {
     void loadUserStores();
   }, [loadUserStores, session?.token]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session?.token) return undefined;
+      void loadUserStores();
+      return undefined;
+    }, [loadUserStores, session?.token])
+  );
+
   const subtitle = useMemo(() => {
     if (loadingStores) return 'Loading your stores...';
     if (!stores.length) return 'No stores yet. Create one to get started.';
@@ -287,6 +302,10 @@ export default function StoresScreen() {
         </View>
 
         <ThemedText style={styles.subtitle}>{subtitle}</ThemedText>
+        {canCreateStore ? <Button label="Create New Store" variant="secondary" onPress={openCreateStore} /> : null}
+        {!loadingStores && !canCreateStore ? (
+          <ThemedText style={styles.subtitle}>This account already has 2 stores. We can make the cap dynamic later.</ThemedText>
+        ) : null}
 
         {loadingStores ? (
           <View style={styles.centerState}>
@@ -338,7 +357,7 @@ export default function StoresScreen() {
         ) : (
           <View style={styles.emptyCard}>
             <ThemedText style={styles.emptyText}>No stores found for this account.</ThemedText>
-            <Button label="Open Tienda" variant="secondary" onPress={() => router.push({ pathname: '/web', params: { url: 'https://markket.place/tienda?display=embed', captureAuth: '0' } } as never)} />
+                {canCreateStore ? <Button label="Create New Store" variant="secondary" onPress={openCreateStore} /> : null}
           </View>
         )}
       </ScrollView>

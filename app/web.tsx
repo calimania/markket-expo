@@ -26,6 +26,15 @@ function getHost(url: string): string {
   }
 }
 
+function getPath(url: string): string {
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, '');
+    return path || '/';
+  } catch {
+    return '';
+  }
+}
+
 function isAllowedWebUrl(url: string, baseHost: string): boolean {
   const host = getHost(url);
   if (!host || !baseHost) return false;
@@ -193,9 +202,10 @@ export default function GenericWebViewScreen() {
   const insets = useSafeAreaInsets();
   const { displayBaseUrl } = useAppConfig();
   const { session, saveToken } = useAuthSession();
-  const { url, captureAuth } = useLocalSearchParams<{
+  const { url, captureAuth, closeOnExit } = useLocalSearchParams<{
     url?: string | string[];
     captureAuth?: string | string[];
+    closeOnExit?: string | string[];
   }>();
 
   const [capturedSource, setCapturedSource] = useState<string>('');
@@ -210,8 +220,11 @@ export default function GenericWebViewScreen() {
 
   const targetUrl = normalizeParam(url).trim();
   const captureParam = normalizeParam(captureAuth).trim();
+  const closeOnExitParam = normalizeParam(closeOnExit).trim();
   const shouldCaptureAuth = captureParam !== '0';
+  const shouldCloseOnExit = closeOnExitParam === '1';
   const baseHost = useMemo(() => getHost(displayBaseUrl), [displayBaseUrl]);
+  const initialPath = useMemo(() => getPath(targetUrl), [targetUrl]);
 
   const allowCapture = useMemo(() => {
     return isAllowedWebUrl(targetUrl, baseHost);
@@ -243,6 +256,20 @@ export default function GenericWebViewScreen() {
   const openCurrentInBrowser = useCallback(() => {
     void openExternalUrl(currentUrl || targetUrl);
   }, [currentUrl, openExternalUrl, targetUrl]);
+
+  const shouldCloseEmbeddedWebView = useCallback(
+    (nextUrl: string) => {
+      if (!shouldCloseOnExit) return false;
+      if (!isAllowedWebUrl(nextUrl, baseHost)) return false;
+
+      const nextPath = getPath(nextUrl);
+      if (!nextPath || !initialPath) return false;
+      if (nextPath === initialPath) return false;
+
+      return true;
+    },
+    [baseHost, initialPath, shouldCloseOnExit]
+  );
 
   const pulseTap = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -298,6 +325,11 @@ export default function GenericWebViewScreen() {
       const currentUrl = (request?.url || '').trim();
       if (!currentUrl) return true;
 
+      if (shouldCloseEmbeddedWebView(currentUrl)) {
+        router.back();
+        return false;
+      }
+
       if (shouldCaptureAuth && allowCapture) {
         const found = readTokenFromUrl(currentUrl);
         if (found) {
@@ -321,7 +353,7 @@ export default function GenericWebViewScreen() {
 
       return true;
     },
-    [allowCapture, baseHost, openExternalUrl, saveFromSource, shouldCaptureAuth]
+    [allowCapture, baseHost, openExternalUrl, router, saveFromSource, shouldCaptureAuth, shouldCloseEmbeddedWebView]
   );
 
   const handleMessage = useCallback(
@@ -349,10 +381,16 @@ export default function GenericWebViewScreen() {
   );
 
   const handleNavStateChange = useCallback((state: { canGoBack?: boolean; canGoForward?: boolean; url?: string }) => {
+    const nextUrl = (state.url || '').trim();
+    if (nextUrl && shouldCloseEmbeddedWebView(nextUrl)) {
+      router.back();
+      return;
+    }
+
     setCanGoBack(Boolean(state.canGoBack));
     setCanGoForward(Boolean(state.canGoForward));
-    setCurrentUrl((state.url || '').trim());
-  }, []);
+    setCurrentUrl(nextUrl);
+  }, [router, shouldCloseEmbeddedWebView]);
 
   const handleWebScroll = useCallback(
     (event: { nativeEvent?: { contentOffset?: { y?: number } } }) => {
@@ -416,7 +454,6 @@ export default function GenericWebViewScreen() {
         startInLoadingState
         onMessage={handleMessage}
         onScroll={handleWebScroll}
-        scrollEventThrottle={16}
         onNavigationStateChange={handleNavStateChange}
         onShouldStartLoadWithRequest={handleNavigationAttempt}
         onOpenWindow={handleOpenWindow}

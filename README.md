@@ -36,6 +36,34 @@ npx expo start
 - Android: `npm run android`
 - Web: `npm run web`
 - Lint: `npm run lint`
+- Typecheck: `npm run typecheck`
+- CI checks: `npm run ci-check`
+- API smoke checks: `npm run api:smoke`
+
+## Reliability and Monitoring
+
+The app supports optional observability setup:
+
+- PostHog analytics/events via `EXPO_PUBLIC_POSTHOG_API_KEY`
+- Global network instrumentation for failed HTTP responses and request errors
+
+If monitoring keys are not provided, the app runs normally with observability disabled.
+
+### API Smoke Check
+
+You can quickly test critical endpoints from the terminal:
+
+```bash
+npm run api:smoke
+```
+
+Optional env vars for authenticated checks:
+
+- `MARKKET_BEARER_TOKEN`
+- `MARKKET_USER_ID`
+- `MARKKET_API_BASE_URL`
+- `MARKKET_DISPLAY_BASE_URL`
+
 
 ## Project Structure
 

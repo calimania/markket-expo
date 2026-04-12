@@ -3,7 +3,6 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
@@ -311,6 +310,8 @@ export default function SettingsScreen() {
               Use this to capture magic-login sessions from WebView and test native API auth.
             </ThemedText>
           </View>
+
+
 
       {saved ? (
         <ThemedText style={styles.hint}>Saved. Return to Home and pull to refresh.</ThemedText>

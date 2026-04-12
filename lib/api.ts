@@ -12,6 +12,7 @@
  */
 
 const DEFAULT_API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.markket.place';
+let apiAuthToken = '';
 
 export type ApiError = {
   status: number;
@@ -22,41 +23,80 @@ export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: ApiError };
 
+type ApiRequestOptions = {
+  baseUrl?: string;
+  token?: string | null;
+  headers?: Record<string, string>;
+};
+
+export function setApiAuthToken(token: string | null | undefined): void {
+  apiAuthToken = typeof token === 'string' ? token.trim() : '';
+}
+
+export function clearApiAuthToken(): void {
+  apiAuthToken = '';
+}
+
+export function getApiAuthToken(): string {
+  return apiAuthToken;
+}
+
 function buildUrl(baseUrl: string, path: string): string {
   const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const segment = path.startsWith('/') ? path : `/${path}`;
   return `${base}${segment}`;
 }
 
-export async function apiGet<T>(
-  path: string,
-  options?: {
-    baseUrl?: string;
-    token?: string | null;
-  },
-): Promise<ApiResult<T>> {
-  const url = buildUrl(options?.baseUrl ?? DEFAULT_API_BASE, path);
+function resolveToken(optionToken: string | null | undefined): string {
+  if (optionToken === null) return '';
+  if (typeof optionToken === 'string') return optionToken.trim();
+  return apiAuthToken;
+}
 
+function buildHeaders(options?: ApiRequestOptions): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...(options?.headers ?? {}),
   };
 
-  if (options?.token) {
-    headers['Authorization'] = `Bearer ${options.token}`;
+  const token = resolveToken(options?.token);
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
 
+  return headers;
+}
+
+async function parseApiResponse<T>(response: Response): Promise<ApiResult<T>> {
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: { status: response.status, message: `API error ${response.status}` },
+    };
+  }
+
+  const data = (await response.json()) as T;
+  return { ok: true, data };
+}
+
+export async function apiRequest<T>(
+  path: string,
+  init?: RequestInit,
+  options?: ApiRequestOptions,
+): Promise<ApiResult<T>> {
+  const url = buildUrl(options?.baseUrl ?? DEFAULT_API_BASE, path);
+  const headers = buildHeaders(options);
+
   try {
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, {
+      ...(init ?? {}),
+      headers: {
+        ...headers,
+        ...((init?.headers as Record<string, string> | undefined) ?? {}),
+      },
+    });
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: { status: response.status, message: `API error ${response.status}` },
-      };
-    }
-
-    const data = (await response.json()) as T;
-    return { ok: true, data };
+    return await parseApiResponse<T>(response);
   } catch (err) {
     return {
       ok: false,
@@ -68,47 +108,61 @@ export async function apiGet<T>(
   }
 }
 
+export async function apiGet<T>(
+  path: string,
+  options?: ApiRequestOptions,
+): Promise<ApiResult<T>> {
+  return apiRequest<T>(path, { method: 'GET' }, options);
+}
+
 export async function apiPost<T>(
   path: string,
   body: unknown,
-  options?: {
-    baseUrl?: string;
-    token?: string | null;
-  },
+  options?: ApiRequestOptions,
 ): Promise<ApiResult<T>> {
-  const url = buildUrl(options?.baseUrl ?? DEFAULT_API_BASE, path);
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  if (options?.token) {
-    headers['Authorization'] = `Bearer ${options.token}`;
-  }
-
-  try {
-    const response = await fetch(url, {
+  return apiRequest<T>(
+    path,
+    {
       method: 'POST',
-      headers,
       body: JSON.stringify(body),
-    });
+    },
+    options
+  );
+}
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: { status: response.status, message: `API error ${response.status}` },
-      };
-    }
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  options?: ApiRequestOptions,
+): Promise<ApiResult<T>> {
+  return apiRequest<T>(
+    path,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    },
+    options
+  );
+}
 
-    const data = (await response.json()) as T;
-    return { ok: true, data };
-  } catch (err) {
-    return {
-      ok: false,
-      error: {
-        status: 0,
-        message: err instanceof Error ? err.message : 'Network error',
-      },
-    };
-  }
+export async function apiPatch<T>(
+  path: string,
+  body: unknown,
+  options?: ApiRequestOptions,
+): Promise<ApiResult<T>> {
+  return apiRequest<T>(
+    path,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    },
+    options
+  );
+}
+
+export async function apiDelete<T>(
+  path: string,
+  options?: ApiRequestOptions,
+): Promise<ApiResult<T>> {
+  return apiRequest<T>(path, { method: 'DELETE' }, options);
 }

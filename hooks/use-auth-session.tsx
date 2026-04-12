@@ -1,6 +1,8 @@
 import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
+import { clearApiAuthToken, setApiAuthToken } from '@/lib/api';
+
 const STORAGE_KEY = 'markket-community-app-auth-session';
 
 type AuthSession = {
@@ -75,6 +77,7 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
           email: normalizeText(parsed.email),
           displayName: normalizeText(parsed.displayName),
         });
+        setApiAuthToken(token);
       } catch {
         // Ignore malformed persisted session data and start clean.
       } finally {
@@ -104,11 +107,13 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
     };
 
     setSession(next);
+    setApiAuthToken(token);
     await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(next));
   }, []);
 
   const clearSession = useCallback(async () => {
     setSession(null);
+    clearApiAuthToken();
     await SecureStore.deleteItemAsync(STORAGE_KEY);
   }, []);
 

@@ -2,11 +2,14 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { usePreventRemove } from '@react-navigation/native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -30,6 +33,8 @@ type LocalMedia = {
   fileSizeBytes?: number;
   altText?: string;
   sourceLabel?: string;
+  colorSeed?: string;
+  mediaId?: number | string;
 };
 
 type ComposerDraftPayload = {
@@ -41,6 +46,7 @@ type ComposerDraftPayload = {
   mime?: string;
   altText?: string;
   sourceLabel?: string;
+  colorSeed?: string;
 };
 
 type StockImage = {
@@ -49,7 +55,10 @@ type StockImage = {
   fullUrl: string;
   altText: string;
   author: string;
+  color?: string;
 };
+
+type StockSource = 'unsplash' | 'getty' | 'pexels';
 
 type StoreMedia = {
   id?: number | string;
@@ -74,6 +83,7 @@ type StoreMedia = {
 
 type StoreItem = {
   id?: number;
+  documentId?: string;
   title?: string;
   slug?: string;
   active?: boolean;
@@ -81,7 +91,16 @@ type StoreItem = {
   Cover?: StoreMedia | StoreMedia[] | null;
   Slides?: StoreMedia | StoreMedia[] | null;
   SEO?: {
+    id?: number | string;
+    documentId?: string;
     socialImage?: StoreMedia | StoreMedia[] | null;
+    metaDescription?: string | null;
+  } | null;
+  seo?: {
+    id?: number | string;
+    documentId?: string;
+    socialImage?: StoreMedia | StoreMedia[] | null;
+    metaDescription?: string | null;
   } | null;
 };
 
@@ -89,14 +108,14 @@ type HealthTone = 'empty' | 'warn' | 'good' | 'great';
 
 function getSlotHealth(slot: MediaSlot, count: number): { label: string; hint: string; tone: HealthTone } {
   if (slot === 'slides') {
-    if (count <= 0) return { label: 'Slides Empty', hint: 'Add at least 2 for stronger storytelling', tone: 'empty' };
-    if (count === 1) return { label: 'Slides Half', hint: '1 of 2+ suggested', tone: 'warn' };
-    return { label: 'Slides Strong', hint: `${count} images ready`, tone: 'great' };
+    if (count <= 0) return { label: '', hint: 'Add at least 2 slides', tone: 'empty' };
+    if (count === 1) return { label: '', hint: 'Add one more slide', tone: 'warn' };
+    return { label: '', hint: `${count} slides`, tone: 'great' };
   }
 
-  if (count <= 0) return { label: 'Empty', hint: 'Missing primary image', tone: 'empty' };
-  if (count === 1) return { label: 'Complete', hint: 'Primary image set', tone: 'good' };
-  return { label: 'Strong', hint: `${count} options available`, tone: 'great' };
+  if (count <= 0) return { label: '', hint: 'No image yet', tone: 'empty' };
+  if (count === 1) return { label: '', hint: 'Set', tone: 'good' };
+  return { label: '', hint: `${count} images`, tone: 'great' };
 }
 
 type StoreListResponse = {
@@ -116,9 +135,68 @@ type MeResponse = {
   displayName?: string | null;
 };
 
+type UploadedMediaItem = {
+  id?: number | string;
+  documentId?: string;
+  url?: string;
+};
+
+type SlotPolicy = {
+  maxBytes: number;
+  minWidth: number;
+  minHeight: number;
+  requiresSquare?: boolean;
+};
+
+type SlotTarget = {
+  width: number;
+  height: number;
+  compress: number;
+};
+
+type UploadTarget = {
+  ref: string;
+  refId: string;
+  field: string;
+};
+
 function cleanText(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value.trim();
+}
+
+function decodeSvgDataUri(uri: string): string {
+  const prefix = 'data:image/svg+xml;utf8,';
+  if (!uri.startsWith(prefix)) return '';
+  try {
+    return decodeURIComponent(uri.slice(prefix.length));
+  } catch {
+    return '';
+  }
+}
+
+function mergeDraftIntoSlotMedia(
+  slotMedia: Record<MediaSlot, LocalMedia[]>,
+  draft: LocalMedia | null,
+  slot: MediaSlot,
+  activeIndex: number,
+  mode: 'replace' | 'append' = 'replace'
+): Record<MediaSlot, LocalMedia[]> {
+  if (!draft) return slotMedia;
+
+  const current = slotMedia[slot];
+  if (mode === 'append') {
+    return { ...slotMedia, [slot]: [...current, draft] };
+  }
+
+  if (!current.length) {
+    return { ...slotMedia, [slot]: [draft] };
+  }
+
+  const next = [...current];
+  const target = Math.min(activeIndex, Math.max(current.length - 1, 0));
+  next[target] = draft;
+  return { ...slotMedia, [slot]: next };
 }
 
 function normalizeParam(value: string | string[] | undefined): string {
@@ -153,6 +231,49 @@ function getMediaKey(media: StoreMedia, index: number): string {
   return id != null ? String(id) : `media-${index}`;
 }
 
+function getMediaIdentity(media: StoreMedia, index: number): string {
+  const id = cleanText(media.documentId || media.id || '');
+  if (id) return `id:${id}`;
+
+  const url = cleanText(media.url || media.formats?.medium?.url || media.formats?.small?.url || media.formats?.thumbnail?.url || '');
+  if (url) return `url:${url}`;
+
+  const name = cleanText(media.name || '');
+  if (name) return `name:${name}`;
+
+  return `index:${index}`;
+}
+
+function dedupeStoreMedia(items: StoreMedia[]): StoreMedia[] {
+  const seen = new Set<string>();
+  const deduped: StoreMedia[] = [];
+
+  items.forEach((media, index) => {
+    const identity = getMediaIdentity(media, index);
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    deduped.push(media);
+  });
+
+  return deduped;
+}
+
+function countDuplicateStoreMedia(items: StoreMedia[]): number {
+  const seen = new Set<string>();
+  let duplicates = 0;
+
+  items.forEach((media, index) => {
+    const identity = getMediaIdentity(media, index);
+    if (seen.has(identity)) {
+      duplicates += 1;
+      return;
+    }
+    seen.add(identity);
+  });
+
+  return duplicates;
+}
+
 function makeLocalMedia(asset: ImagePicker.ImagePickerAsset): LocalMedia {
   return {
     key: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -166,26 +287,161 @@ function makeLocalMedia(asset: ImagePicker.ImagePickerAsset): LocalMedia {
   };
 }
 
-function formatBytesFromKb(sizeKb?: number): string {
-  if (typeof sizeKb !== 'number' || !Number.isFinite(sizeKb) || sizeKb <= 0) return 'n/a';
-  const bytes = sizeKb * 1024;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function formatDate(value?: string): string {
-  const clean = cleanText(value);
-  if (!clean) return 'n/a';
-  const date = new Date(clean);
-  if (Number.isNaN(date.getTime())) return 'n/a';
-  return date.toLocaleString();
-}
-
 function parseMediaSlot(value: string): MediaSlot | null {
   if (value === 'cover' || value === 'seoSocial' || value === 'logo' || value === 'slides') {
     return value;
   }
   return null;
+}
+
+function slotLabel(slot: MediaSlot): string {
+  if (slot === 'cover') return 'Cover';
+  if (slot === 'seoSocial') return 'SEO Social';
+  if (slot === 'logo') return 'Logo';
+  return 'Slides';
+}
+
+const SLOT_POLICIES: Record<MediaSlot, SlotPolicy> = {
+  cover: { maxBytes: 2 * 1024 * 1024, minWidth: 1400, minHeight: 780 },
+  seoSocial: { maxBytes: Math.round(1.5 * 1024 * 1024), minWidth: 1100, minHeight: 578 },
+  logo: { maxBytes: 1 * 1024 * 1024, minWidth: 768, minHeight: 768, requiresSquare: true },
+  slides: { maxBytes: 2 * 1024 * 1024, minWidth: 1200, minHeight: 900 },
+};
+
+const SLOT_TARGETS: Record<MediaSlot, SlotTarget> = {
+  cover: { width: 1600, height: 900, compress: 0.82 },
+  seoSocial: { width: 1200, height: 630, compress: 0.8 },
+  logo: { width: 1024, height: 1024, compress: 0.88 },
+  slides: { width: 1440, height: 1800, compress: 0.82 },
+};
+
+function normalizeHexColor(value: string): string {
+  const clean = cleanText(value).toLowerCase();
+  if (!clean) return '';
+  const withHash = clean.startsWith('#') ? clean : `#${clean}`;
+  if (/^#[0-9a-f]{6}$/i.test(withHash)) return withHash.toUpperCase();
+  return '';
+}
+
+function preferJpegStockUrl(rawUrl: string): string {
+  const clean = cleanText(rawUrl);
+  if (!clean) return '';
+
+  try {
+    const parsed = new URL(clean);
+    parsed.searchParams.set('fm', 'jpg');
+    if (!parsed.searchParams.get('q')) parsed.searchParams.set('q', '85');
+    if (!parsed.searchParams.get('fit')) parsed.searchParams.set('fit', 'max');
+    if (!parsed.searchParams.get('w')) parsed.searchParams.set('w', '2000');
+    return parsed.toString();
+  } catch {
+    return clean;
+  }
+}
+
+function validateMediaAgainstSlotPolicy(slot: MediaSlot, media: LocalMedia): string {
+  const policy = SLOT_POLICIES[slot];
+  const label = slotLabel(slot);
+  const mime = cleanText(media.mime || '').toLowerCase();
+  const isVector = mime.includes('svg') || cleanText(media.uri).startsWith('data:image/svg+xml');
+
+  if (typeof media.fileSizeBytes === 'number' && media.fileSizeBytes > policy.maxBytes) {
+    const maxMb = (policy.maxBytes / (1024 * 1024)).toFixed(1);
+    return `${label} image is too large. Keep it under ${maxMb}MB.`;
+  }
+
+  if (isVector) {
+    return '';
+  }
+
+  if (typeof media.width === 'number' && typeof media.height === 'number') {
+    if (media.width < policy.minWidth || media.height < policy.minHeight) {
+      return `${label} image is too small. Use at least ${policy.minWidth}x${policy.minHeight}.`;
+    }
+
+    if (policy.requiresSquare && Math.abs(media.width - media.height) > Math.max(4, Math.round(media.width * 0.04))) {
+      return `${label} should be close to square for best results.`;
+    }
+  }
+
+  return '';
+}
+
+function getUploadTargetForSlot(store: StoreItem, slot: MediaSlot): UploadTarget {
+  if (slot === 'seoSocial') {
+    const seoRecord = store.SEO || store.seo;
+    const seoRefId =
+      typeof seoRecord?.id === 'number'
+        ? String(seoRecord.id)
+        : typeof seoRecord?.id === 'string'
+          ? seoRecord.id.trim()
+          : '';
+
+    if (!seoRefId) {
+      throw new Error('Could not resolve the SEO record for social image publishing.');
+    }
+
+    return {
+      ref: 'common.seo',
+      refId: seoRefId,
+      field: 'socialImage',
+    };
+  }
+
+  if (typeof store.id !== 'number') {
+    throw new Error('Could not resolve this store ID for publishing.');
+  }
+
+  if (slot === 'cover') {
+    return { ref: 'api::store.store', refId: String(store.id), field: 'Cover' };
+  }
+  if (slot === 'logo') {
+    return { ref: 'api::store.store', refId: String(store.id), field: 'Logo' };
+  }
+  return { ref: 'api::store.store', refId: String(store.id), field: 'Slides' };
+}
+
+function uploadFieldLabel(field: string): string {
+  if (field === 'Cover') return 'Cover';
+  if (field === 'Logo') return 'Logo';
+  if (field === 'socialImage') return 'SEO Social';
+  return 'Slides';
+}
+
+function slugToTitle(value: string): string {
+  const clean = cleanText(value).replace(/[-_]+/g, ' ');
+  if (!clean) return '';
+  return clean
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function remoteItemToLocalMedia(item: {
+  key: string;
+  uri?: string;
+  width?: number;
+  height?: number;
+  fileName?: string;
+  mime?: string;
+  alt?: string;
+  sourceLabel?: string;
+  colorSeed?: string;
+  mediaId?: number | string;
+}): LocalMedia {
+  return {
+    key: item.key,
+    uri: cleanText(item.uri),
+    width: item.width,
+    height: item.height,
+    fileName: cleanText(item.fileName),
+    mime: cleanText(item.mime),
+    altText: cleanText(item.alt),
+    sourceLabel: cleanText(item.sourceLabel) || 'remote',
+    colorSeed: cleanText(item.colorSeed),
+    mediaId: item.mediaId,
+  };
 }
 
 function mapStockResults(payload: unknown): StockImage[] {
@@ -196,6 +452,25 @@ function mapStockResults(payload: unknown): StockImage[] {
   ].filter(Boolean) as Record<string, unknown>[];
 
   let items: unknown[] = [];
+
+  // Check for direct URL array (web format: data.urls = [url1, url2, ...])
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate.urls)) {
+      const urls = candidate.urls as string[];
+      return urls
+        .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        .map((url, index) => ({
+          id: `unsplash-${index}`,
+          thumbUrl: url,
+          fullUrl: url,
+          altText: '',
+          author: 'Unsplash',
+          color: '',
+        } as StockImage));
+    }
+  }
+
+  // Check for structured results (Unsplash native format)
   for (const candidate of candidates) {
     if (Array.isArray(candidate.results)) {
       items = candidate.results;
@@ -209,23 +484,84 @@ function mapStockResults(payload: unknown): StockImage[] {
       items = candidate.data;
       break;
     }
+    if (Array.isArray(candidate.items)) {
+      items = candidate.items;
+      break;
+    }
+    if (Array.isArray(candidate.objects)) {
+      items = candidate.objects;
+      break;
+    }
   }
 
   return items
     .map((item, index) => {
       const source = item as Record<string, unknown>;
       const urls = (source.urls as Record<string, unknown>) || {};
-      const thumb = cleanText(urls.thumb || urls.small || source.thumb || source.small || source.url || '');
-      const full = cleanText(urls.regular || urls.full || source.full || source.regular || source.url || thumb || '');
-      if (!thumb && !full) return null;
+      const images = (source.images as Record<string, unknown>) || {};
+      const src = (source.src as Record<string, unknown>) || {};
+      const displaySizes = Array.isArray(source.display_sizes)
+        ? (source.display_sizes as Record<string, unknown>[])
+        : [];
+      const firstDisplay = (displaySizes[0] as Record<string, unknown>) || {};
+      const thumb = cleanText(
+        urls.thumb ||
+        urls.small ||
+        source.thumb ||
+        source.small ||
+        source.url ||
+        src.small ||
+        src.tiny ||
+        src.medium ||
+        ''
+      );
+      const full = cleanText(
+        urls.regular ||
+        urls.full ||
+        source.full ||
+        source.regular ||
+        source.url ||
+        source.image ||
+        src.original ||
+        src.large2x ||
+        src.large ||
+        src.landscape ||
+        src.portrait ||
+        images.full ||
+        images.large ||
+        images.medium ||
+        firstDisplay.uri ||
+        thumb ||
+        ''
+      );
+      const finalThumb = cleanText(
+        thumb ||
+        images.thumbnail ||
+        images.small ||
+        firstDisplay.uri ||
+        full ||
+        ''
+      );
+      if (!finalThumb && !full) return null;
 
       const user = (source.user as Record<string, unknown>) || {};
+      const artist = (source.artist as Record<string, unknown>) || {};
+      const creator = (source.creator as Record<string, unknown>) || {};
       return {
         id: cleanText(source.id || '') || `stock-${index}`,
-        thumbUrl: thumb || full,
-        fullUrl: full || thumb,
+        thumbUrl: finalThumb || full,
+        fullUrl: full || finalThumb,
         altText: cleanText(source.alt_description || source.description || source.alt || ''),
-        author: cleanText(user.name || source.author || source.photographer || ''),
+        author: cleanText(
+          user.name ||
+          artist.name ||
+          creator.name ||
+          source.author ||
+          source.photographer ||
+          source.credit ||
+          'Stock'
+        ),
+        color: normalizeHexColor(cleanText(source.color || '')),
       } as StockImage;
     })
     .filter((item): item is StockImage => Boolean(item));
@@ -255,15 +591,67 @@ export default function StoreMediaStudioScreen() {
   const [fullPreviewVisible, setFullPreviewVisible] = useState(false);
   const [draftMedia, setDraftMedia] = useState<LocalMedia | null>(null);
   const [stockQuery, setStockQuery] = useState('');
+  const [stockSource, setStockSource] = useState<StockSource>('unsplash');
   const [stockLoading, setStockLoading] = useState(false);
   const [stockError, setStockError] = useState('');
   const [stockResults, setStockResults] = useState<StockImage[]>([]);
+  const [publishingChanges, setPublishingChanges] = useState(false);
+  const [fixingSlot, setFixingSlot] = useState(false);
+  const [replaceUndoSnapshot, setReplaceUndoSnapshot] = useState<{
+    slot: MediaSlot;
+    previousSlotItems: LocalMedia[];
+    previousActiveIndex: number;
+    draft: LocalMedia;
+  } | null>(null);
+  const [showReplaceToast, setShowReplaceToast] = useState(false);
+  const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressPreventRemoveRef = useRef(false);
+  const lastConsumedDraftKeyRef = useRef('');
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const previewAnchorYRef = useRef(0);
   const [localSlotMedia, setLocalSlotMedia] = useState<Record<MediaSlot, LocalMedia[]>>({
     cover: [],
     seoSocial: [],
     logo: [],
     slides: [],
   });
+
+  const effectiveSlotMedia = useMemo(
+    () => mergeDraftIntoSlotMedia(localSlotMedia, draftMedia, activeSlot, activeIndex),
+    [activeIndex, activeSlot, draftMedia, localSlotMedia]
+  );
+
+  const changedSlotCount = useMemo(
+    () => Object.values(effectiveSlotMedia).reduce((count, items) => count + (items.length ? 1 : 0), 0),
+    [effectiveSlotMedia]
+  );
+
+  const clearUndoToastTimer = useCallback(() => {
+    if (undoToastTimerRef.current) {
+      clearTimeout(undoToastTimerRef.current);
+      undoToastTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleUndoToastHide = useCallback(() => {
+    clearUndoToastTimer();
+    undoToastTimerRef.current = setTimeout(() => {
+      setShowReplaceToast(false);
+      setReplaceUndoSnapshot(null);
+      undoToastTimerRef.current = null;
+    }, 4200);
+  }, [clearUndoToastTimer]);
+
+  const scrollToPreview = useCallback((animated = true) => {
+    const target = Math.max(previewAnchorYRef.current - 18, 0);
+    scrollViewRef.current?.scrollTo({ y: target, animated });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearUndoToastTimer();
+    };
+  }, [clearUndoToastTimer]);
 
   const resolveUserId = useCallback(async (): Promise<string> => {
     const existing =
@@ -377,7 +765,9 @@ export default function StoreMediaStudioScreen() {
   const coverItems = useMemo(() => toMediaArray(store?.Cover), [store?.Cover]);
   const socialItems = useMemo(() => toMediaArray(store?.SEO?.socialImage), [store?.SEO?.socialImage]);
   const logoItems = useMemo(() => toMediaArray(store?.Logo), [store?.Logo]);
-  const slidesItems = useMemo(() => toMediaArray(store?.Slides), [store?.Slides]);
+  const rawSlidesItems = useMemo(() => toMediaArray(store?.Slides), [store?.Slides]);
+  const duplicateSlidesCount = useMemo(() => countDuplicateStoreMedia(rawSlidesItems), [rawSlidesItems]);
+  const slidesItems = useMemo(() => dedupeStoreMedia(rawSlidesItems).slice(0, 6), [rawSlidesItems]);
 
   const remoteSlotMedia = useMemo(
     () => ({
@@ -393,6 +783,7 @@ export default function StoreMediaStudioScreen() {
         sizeKb: media.size,
         createdAt: cleanText(media.createdAt),
         updatedAt: cleanText(media.updatedAt),
+        mediaId: media.id || media.documentId,
       })),
       seoSocial: socialItems.map((media, index) => ({
         key: getMediaKey(media, index),
@@ -406,6 +797,7 @@ export default function StoreMediaStudioScreen() {
         sizeKb: media.size,
         createdAt: cleanText(media.createdAt),
         updatedAt: cleanText(media.updatedAt),
+        mediaId: media.id || media.documentId,
       })),
       logo: logoItems.map((media, index) => ({
         key: getMediaKey(media, index),
@@ -419,6 +811,7 @@ export default function StoreMediaStudioScreen() {
         sizeKb: media.size,
         createdAt: cleanText(media.createdAt),
         updatedAt: cleanText(media.updatedAt),
+        mediaId: media.id || media.documentId,
       })),
       slides: slidesItems.map((media, index) => ({
         key: getMediaKey(media, index),
@@ -432,6 +825,7 @@ export default function StoreMediaStudioScreen() {
         sizeKb: media.size,
         createdAt: cleanText(media.createdAt),
         updatedAt: cleanText(media.updatedAt),
+        mediaId: media.id || media.documentId,
       })),
     }),
     [apiBaseUrl, coverItems, logoItems, slidesItems, socialItems]
@@ -454,6 +848,7 @@ export default function StoreMediaStudioScreen() {
         updatedAt: '',
         isLocal: true,
         sourceLabel: cleanText(item.sourceLabel),
+        colorSeed: cleanText(item.colorSeed),
       }));
     }
 
@@ -466,19 +861,67 @@ export default function StoreMediaStudioScreen() {
 
   const selectedMedia = activeItems[activeIndex];
   const selectedMediaUrl = cleanText(selectedMedia?.uri);
-  const selectedAlt = cleanText(selectedMedia?.alt) || 'n/a';
-  const selectedFilename = cleanText(selectedMedia?.fileName) || 'n/a';
-  const selectedCaption = cleanText(selectedMedia?.caption) || 'n/a';
-  const selectedMime = cleanText(selectedMedia?.mime) || 'n/a';
-  const selectedDimensions =
-    typeof selectedMedia?.width === 'number' && typeof selectedMedia?.height === 'number'
-      ? `${selectedMedia.width} x ${selectedMedia.height}`
-      : 'n/a';
-  const selectedFileSize = formatBytesFromKb(selectedMedia?.sizeKb);
+  const selectedMediaIsLocal = Boolean(selectedMedia?.isLocal);
+  const selectedAltRaw = cleanText(selectedMedia?.alt);
+  const selectedColorSeed = cleanText((selectedMedia as { colorSeed?: string } | undefined)?.colorSeed);
+  const hasDraft = Boolean(draftMedia);
+  const showDraftPreview = hasDraft && cleanText(draftMedia?.sourceLabel) !== 'composer';
+  const storeTitleSeed = cleanText(store?.title) || slugToTitle(resolvedStoreSlug) || 'Markket Drop';
+  const seoAltSeed = cleanText(remoteSlotMedia.seoSocial[0]?.alt);
+  const subtitleSeed = cleanText(store?.SEO?.metaDescription || store?.seo?.metaDescription || '');
+  const altSeed =
+    cleanText(draftMedia?.altText) ||
+    selectedAltRaw ||
+    seoAltSeed ||
+    `${storeTitleSeed} ${slotLabel(activeSlot)}`.trim();
+
   const hasUnsavedChanges = useMemo(() => {
     if (draftMedia) return true;
     return Object.values(localSlotMedia).some((items) => items.length > 0);
   }, [draftMedia, localSlotMedia]);
+  const activeSlotHasLocalPreview = localSlotMedia[activeSlot].length > 0;
+
+  const selectedQuality = useMemo(() => {
+    const policy = SLOT_POLICIES[activeSlot];
+    let score = 100;
+    const notes: string[] = [];
+
+    if (!selectedMedia) {
+      return { score: 0, label: 'No image', notes: ['Select an image to score quality.'] };
+    }
+
+    if (!selectedAltRaw) {
+      score -= 12;
+      notes.push('Add alt text for accessibility.');
+    }
+
+    if (typeof selectedMedia.width === 'number' && typeof selectedMedia.height === 'number') {
+      if (selectedMedia.width < policy.minWidth || selectedMedia.height < policy.minHeight) {
+        score -= 28;
+        notes.push(`Increase dimensions to at least ${policy.minWidth}x${policy.minHeight}.`);
+      }
+
+      if (policy.requiresSquare && Math.abs(selectedMedia.width - selectedMedia.height) > Math.max(4, Math.round(selectedMedia.width * 0.04))) {
+        score -= 22;
+        notes.push('Use a square logo for cleaner rendering.');
+      }
+    }
+
+    if (typeof selectedMedia.sizeKb === 'number' && selectedMedia.sizeKb * 1024 > policy.maxBytes) {
+      score -= 20;
+      notes.push('Compress image to fit slot size limits.');
+    }
+
+    const mime = cleanText(selectedMedia.mime || '').toLowerCase();
+    if (mime && !mime.includes('jpeg') && !mime.includes('jpg') && !mime.includes('png') && !mime.includes('webp') && !mime.includes('svg')) {
+      score -= 10;
+      notes.push('Prefer JPG, PNG, WEBP, or SVG.');
+    }
+
+    const clamped = Math.max(0, Math.min(100, score));
+    const label = clamped >= 85 ? 'Excellent' : clamped >= 70 ? 'Good' : clamped >= 50 ? 'Needs polish' : 'Needs fixes';
+    return { score: clamped, label, notes };
+  }, [activeSlot, selectedAltRaw, selectedMedia]);
 
   const slotSummary = useMemo(
     () => ({
@@ -523,25 +966,26 @@ export default function StoreMediaStudioScreen() {
     return [4, 5];
   }, [activeSlot]);
 
-  const confirmDiscardChanges = useCallback((onConfirm: () => void) => {
-    if (!hasUnsavedChanges) {
-      onConfirm();
+  usePreventRemove(hasUnsavedChanges, (event) => {
+    if (suppressPreventRemoveRef.current) {
+      suppressPreventRemoveRef.current = false;
+      navigation.dispatch(event.data.action);
       return;
     }
 
-    Alert.alert('Discard unsaved changes?', 'You have local media changes that are not uploaded yet.', [
+    Alert.alert('Leave without publishing?', 'You have changes ready to go live.', [
       { text: 'Keep Editing', style: 'cancel' },
       {
-        text: 'Discard',
-        style: 'destructive',
-        onPress: onConfirm,
+        text: 'Save & Publish',
+        onPress: () => {
+          void (async () => {
+            const saved = await publishLocalChanges();
+            if (saved) {
+              navigation.dispatch(event.data.action);
+            }
+          })();
+        },
       },
-    ]);
-  }, [hasUnsavedChanges]);
-
-  usePreventRemove(hasUnsavedChanges, (event) => {
-    Alert.alert('Discard unsaved changes?', 'You have local media changes that are not uploaded yet.', [
-      { text: 'Keep Editing', style: 'cancel' },
       {
         text: 'Discard',
         style: 'destructive',
@@ -550,23 +994,78 @@ export default function StoreMediaStudioScreen() {
     ]);
   });
 
+  const applyIncomingDraftToSlot = useCallback(
+    (incomingDraft: LocalMedia, slot: MediaSlot, index: number, mode: 'replace' | 'append' = 'replace') => {
+      const policyError = validateMediaAgainstSlotPolicy(slot, incomingDraft);
+      if (policyError) {
+        Alert.alert('Image needs adjustment', policyError);
+        return;
+      }
+
+      const slotBaseItems = localSlotMedia[slot].length
+        ? [...localSlotMedia[slot]]
+        : remoteSlotMedia[slot].map((item) => remoteItemToLocalMedia(item));
+
+      if (slot === 'slides' && mode === 'append' && slotBaseItems.length >= 6) {
+        Alert.alert('Slides full', 'Remove a slide before adding another.');
+        return;
+      }
+
+      const previousSlotItems = [...slotBaseItems];
+      const previousActiveIndex = index;
+      const nextIndex = mode === 'append' ? previousSlotItems.length : 0;
+
+      setActiveSlot(slot);
+      setLocalSlotMedia((prev) => {
+        const nextState = { ...prev, [slot]: slotBaseItems };
+        return mergeDraftIntoSlotMedia(nextState, incomingDraft, slot, index, mode);
+      });
+      setActiveIndex(nextIndex);
+      setDraftMedia(null);
+      setReplaceUndoSnapshot({
+        slot,
+        previousSlotItems,
+        previousActiveIndex,
+        draft: incomingDraft,
+      });
+      setShowReplaceToast(true);
+      scheduleUndoToastHide();
+      requestAnimationFrame(() => scrollToPreview(true));
+    },
+    [localSlotMedia, remoteSlotMedia, scheduleUndoToastHide, scrollToPreview]
+  );
+
   const applyDraftToSlot = useCallback(() => {
     if (!draftMedia) return;
 
-    setLocalSlotMedia((prev) => {
-      const current = prev[activeSlot];
-      if (!current.length) {
-        return { ...prev, [activeSlot]: [draftMedia] };
-      }
+    applyIncomingDraftToSlot(draftMedia, activeSlot, activeIndex);
+  }, [activeIndex, activeSlot, applyIncomingDraftToSlot, draftMedia]);
 
-      const next = [...current];
-      const target = Math.min(activeIndex, Math.max(current.length - 1, 0));
-      next[target] = draftMedia;
-      return { ...prev, [activeSlot]: next };
-    });
-    setActiveIndex(0);
+  const undoReplaceSlotPreview = useCallback(() => {
+    if (!replaceUndoSnapshot) return;
+
+    clearUndoToastTimer();
+    setLocalSlotMedia((prev) => ({
+      ...prev,
+      [replaceUndoSnapshot.slot]: replaceUndoSnapshot.previousSlotItems,
+    }));
+    setActiveSlot(replaceUndoSnapshot.slot);
+    const restoredLength = replaceUndoSnapshot.previousSlotItems.length;
+    setActiveIndex(restoredLength ? Math.min(replaceUndoSnapshot.previousActiveIndex, restoredLength - 1) : 0);
     setDraftMedia(null);
-  }, [activeIndex, activeSlot, draftMedia]);
+    setShowReplaceToast(false);
+    setReplaceUndoSnapshot(null);
+  }, [clearUndoToastTimer, replaceUndoSnapshot]);
+
+  const updateDraftAltText = useCallback((value: string) => {
+    setDraftMedia((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        altText: value,
+      };
+    });
+  }, []);
 
   const pickFromLibrary = useCallback(async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -580,8 +1079,8 @@ export default function StoreMediaStudioScreen() {
     if (result.canceled || !result.assets.length) return;
 
     const localMedia = makeLocalMedia(result.assets[0]);
-    setDraftMedia(localMedia);
-  }, [slotAspect]);
+    applyIncomingDraftToSlot(localMedia, activeSlot, activeIndex, activeSlot === 'slides' ? 'append' : 'replace');
+  }, [activeIndex, activeSlot, applyIncomingDraftToSlot, slotAspect]);
 
   const pickFromCamera = useCallback(async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
@@ -600,14 +1099,104 @@ export default function StoreMediaStudioScreen() {
     if (result.canceled || !result.assets.length) return;
 
     const localMedia = { ...makeLocalMedia(result.assets[0]), sourceLabel: 'camera' };
-    setDraftMedia(localMedia);
-  }, [slotAspect]);
+    applyIncomingDraftToSlot(localMedia, activeSlot, activeIndex, activeSlot === 'slides' ? 'append' : 'replace');
+  }, [activeIndex, activeSlot, applyIncomingDraftToSlot, slotAspect]);
 
   const clearLocalReplacement = useCallback(() => {
-    setLocalSlotMedia((prev) => ({ ...prev, [activeSlot]: [] }));
-    setDraftMedia(null);
-    setActiveIndex(0);
-  }, [activeSlot]);
+    const clearState = () => {
+      setLocalSlotMedia((prev) => ({ ...prev, [activeSlot]: [] }));
+      setDraftMedia(null);
+      setActiveIndex(0);
+    };
+
+    if (!draftMedia && !localSlotMedia[activeSlot].length) {
+      clearState();
+      return;
+    }
+
+    Alert.alert(
+      'Start over?',
+      'Clears your preview changes for this slot.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        {
+          text: 'Start Over',
+          style: 'destructive',
+          onPress: clearState,
+        },
+      ]
+    );
+  }, [activeSlot, draftMedia, localSlotMedia]);
+
+  const removeSelectedSlide = useCallback(() => {
+    if (activeSlot !== 'slides') return;
+
+    const localSlides = localSlotMedia.slides.length
+      ? localSlotMedia.slides
+      : remoteSlotMedia.slides.map((item) => remoteItemToLocalMedia(item));
+
+    if (!localSlides.length) {
+      Alert.alert('No slides', 'There are no slides to remove.');
+      return;
+    }
+
+    const target = Math.min(activeIndex, Math.max(localSlides.length - 1, 0));
+
+    Alert.alert('Remove this slide?', 'Removed from your store when you publish.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => {
+          const next = localSlides.filter((_, index) => index !== target);
+          setLocalSlotMedia((prev) => ({ ...prev, slides: next }));
+          setActiveIndex(next.length ? Math.min(target, next.length - 1) : 0);
+          requestAnimationFrame(() => scrollToPreview(true));
+        },
+      },
+    ]);
+  }, [activeIndex, activeSlot, localSlotMedia.slides, remoteSlotMedia.slides, scrollToPreview]);
+
+  const moveSelectedSlide = useCallback(
+    (direction: 'left' | 'right') => {
+      if (activeSlot !== 'slides') return;
+
+      const localSlides = localSlotMedia.slides.length
+        ? localSlotMedia.slides
+        : remoteSlotMedia.slides.map((item) => remoteItemToLocalMedia(item));
+
+      if (localSlides.length < 2) {
+        return;
+      }
+
+      const currentIndex = Math.min(activeIndex, localSlides.length - 1);
+      const targetIndex = direction === 'left' ? currentIndex - 1 : currentIndex + 1;
+      if (targetIndex < 0 || targetIndex >= localSlides.length) {
+        return;
+      }
+
+      const next = [...localSlides];
+      const [moved] = next.splice(currentIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      setLocalSlotMedia((prev) => ({ ...prev, slides: next }));
+      setActiveIndex(targetIndex);
+      requestAnimationFrame(() => scrollToPreview(true));
+    },
+    [activeIndex, activeSlot, localSlotMedia.slides, remoteSlotMedia.slides, scrollToPreview]
+  );
+
+  const discardDraftMedia = useCallback(() => {
+    if (!draftMedia) return;
+
+    Alert.alert('Clear this draft?', 'Your live store won\'t change.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => setDraftMedia(null),
+      },
+    ]);
+  }, [draftMedia]);
 
   const searchStockImages = useCallback(async () => {
     setStockLoading(true);
@@ -615,8 +1204,8 @@ export default function StoreMediaStudioScreen() {
     try {
       const query = stockQuery.trim();
       const endpoint = query
-        ? `/api/markket/img?action=unsplash&query=${encodeURIComponent(query)}`
-        : '/api/markket/img?action=unsplash';
+        ? `/api/markket/img?action=${stockSource}&query=${encodeURIComponent(query)}&per_page=24&count=24`
+        : `/api/markket/img?action=${stockSource}&per_page=24&count=24`;
       const response = await fetch(`${displayBaseUrl}${endpoint.replace(/^\//, '')}`);
 
       if (!response.ok) {
@@ -629,54 +1218,190 @@ export default function StoreMediaStudioScreen() {
       const mapped = mapStockResults(payload);
       setStockResults(mapped);
       if (!mapped.length) {
-        setStockError('No stock images found for this search.');
+        setStockError(`No ${stockSource} images found for this search.`);
       }
     } catch {
       setStockResults([]);
-      setStockError('Network error loading stock images.');
+      setStockError(`Network error loading ${stockSource} images.`);
     } finally {
       setStockLoading(false);
     }
-  }, [displayBaseUrl, stockQuery]);
+  }, [displayBaseUrl, stockQuery, stockSource]);
+
+  useEffect(() => {
+    setStockResults([]);
+    setStockError('');
+  }, [stockSource]);
 
   const selectStockImage = useCallback(
     (image: StockImage) => {
+      const preferredFullUrl = preferJpegStockUrl(image.fullUrl || image.thumbUrl);
       const localMedia: LocalMedia = {
         key: `stock-${image.id}-${Date.now()}`,
-        uri: image.fullUrl,
+        uri: preferredFullUrl,
         fileName: image.id,
         mime: 'image/jpeg',
         altText: image.altText,
-        sourceLabel: image.author ? `unsplash:${image.author}` : 'unsplash',
+        sourceLabel: image.author ? `${stockSource}:${image.author}` : stockSource,
+        colorSeed: normalizeHexColor(image.color || ''),
       };
 
-      setDraftMedia(localMedia);
+      applyIncomingDraftToSlot(localMedia, activeSlot, activeIndex, activeSlot === 'slides' ? 'append' : 'replace');
     },
-    []
+    [activeIndex, activeSlot, applyIncomingDraftToSlot, stockSource]
   );
 
-  const openStoreEditor = useCallback(() => {
-    if (!resolvedStoreSlug) {
-      Alert.alert('Store missing', 'This store does not have a slug.');
-      return;
-    }
+  const uploadLocalMediaToProxy = useCallback(
+    async (media: LocalMedia, token: string, userId: string, target: UploadTarget): Promise<UploadedMediaItem> => {
+      const uri = cleanText(media.uri);
+      if (!uri) {
+        throw new Error('Missing media URI for upload.');
+      }
 
-    const storeEditorUrl = `${displayBaseUrl}tienda/${resolvedStoreSlug}/store?display=embed`;
-    confirmDiscardChanges(() => {
-      router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0' } } as never);
-    });
-  }, [confirmDiscardChanges, displayBaseUrl, resolvedStoreSlug, router]);
+      let uploadUri = uri;
+      let cleanupUri = '';
+      let fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.jpg`;
+      let mimeType = cleanText(media.mime) || 'image/jpeg';
+
+      if (uri.startsWith('data:image/svg+xml')) {
+        const svgMarkup = decodeSvgDataUri(uri);
+        if (!svgMarkup) {
+          throw new Error('Could not prepare this SVG draft for upload.');
+        }
+
+        const svgFile = new FileSystem.File(FileSystem.Paths.cache, `markket-publish-${Date.now()}.svg`);
+        svgFile.write(svgMarkup);
+
+        // Prefer raster upload for maximum backend compatibility.
+        try {
+          const rasterized = await ImageManipulator.manipulateAsync(svgFile.uri, [], {
+            compress: 0.9,
+            format: ImageManipulator.SaveFormat.JPEG,
+          });
+          uploadUri = rasterized.uri;
+          cleanupUri = rasterized.uri;
+          fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.jpg`;
+          mimeType = 'image/jpeg';
+          try {
+            svgFile.delete();
+          } catch {
+            // Ignore temp file cleanup failures.
+          }
+        } catch {
+          uploadUri = svgFile.uri;
+          cleanupUri = svgFile.uri;
+          fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.svg`;
+          mimeType = 'image/svg+xml';
+        }
+      }
+
+      if (/^https?:\/\//i.test(uri)) {
+        const extensionMatch = uri.match(/\.(jpg|jpeg|png|webp)(\?|$)/i);
+        const ext = extensionMatch?.[1]?.toLowerCase() || 'jpg';
+        const targetFile = new FileSystem.File(FileSystem.Paths.cache, `markket-publish-${Date.now()}.${ext}`);
+        const download = await FileSystem.File.downloadFileAsync(uri, targetFile, { idempotent: true });
+        uploadUri = download.uri;
+        cleanupUri = download.uri;
+        fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.${ext}`;
+        mimeType = cleanText(media.mime) || `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+      }
+
+      const formData = new FormData();
+      formData.append('files', {
+        uri: uploadUri,
+        name: fileName,
+        type: mimeType,
+      } as unknown as Blob);
+      formData.append('ref', target.ref);
+      formData.append('refId', target.refId);
+      formData.append('field', target.field);
+      formData.append(
+        'fileInfo',
+        JSON.stringify({
+          name: fileName,
+          alternativeText: cleanText(media.altText) || `${uploadFieldLabel(target.field)} image`,
+          caption: cleanText(media.altText) || `${uploadFieldLabel(target.field)} image`,
+        })
+      );
+
+      const proxyUploadUrl = `${displayBaseUrl}api/markket?path=/api/upload`;
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        'markket-user-id': String(userId),
+      };
+
+      try {
+        const proxyResponse = await fetch(proxyUploadUrl, {
+          method: 'POST',
+          headers,
+          body: formData,
+        });
+
+        if (proxyResponse.ok) {
+          const payload = (await proxyResponse.json()) as unknown;
+          const payloadRecord = (payload as Record<string, unknown>) || {};
+          const list = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payloadRecord.data)
+              ? (payloadRecord.data as unknown[])
+              : [];
+          const directItem = !Array.isArray(payload) ? (payload as UploadedMediaItem) : undefined;
+          const first = (list[0] as UploadedMediaItem | undefined) || directItem;
+          if (first?.id != null) return first;
+          throw new Error('Proxy upload response did not include a media ID.');
+        }
+
+        const failureText = (await proxyResponse.text()).slice(0, 220);
+        throw new Error(`Upload failed (${proxyResponse.status}) ${failureText}`.trim());
+      } finally {
+        if (cleanupUri) {
+          try {
+            const tempFile = new FileSystem.File(cleanupUri);
+            tempFile.delete();
+          } catch {
+            // Ignore temp file cleanup failures.
+          }
+        }
+      }
+    },
+    [displayBaseUrl]
+  );
 
   const openComposer = useCallback(
-    (mode: 'from-scratch' | 'from-photo' | 'edit-existing') => {
+    async (mode: 'from-scratch' | 'from-photo' | 'edit-existing') => {
+      const composerSourceUri =
+        mode === 'edit-existing'
+          ? cleanText(draftMedia?.uri) || selectedMediaUrl
+          : selectedMediaUrl;
+      const resolvedMode =
+        (mode === 'from-photo' || mode === 'edit-existing') && !composerSourceUri ? 'from-scratch' : mode;
+
       const params: Record<string, string> = {
         storeSlug: resolvedStoreSlug,
         slot: activeSlot,
-        mode,
+        mode: resolvedMode,
+        titleSeed: storeTitleSeed,
+        subtitleSeed,
+        altSeed,
       };
 
-      if (mode !== 'from-scratch' && selectedMediaUrl) {
-        params.sourceUri = selectedMediaUrl;
+      const colorSeed = normalizeHexColor(cleanText(draftMedia?.colorSeed || '') || selectedColorSeed);
+      if (colorSeed) {
+        params.colorSeed = colorSeed;
+      }
+
+      if (resolvedMode !== 'from-scratch' && composerSourceUri) {
+        if (
+          composerSourceUri.startsWith('data:image/') ||
+          /^https?:\/\//i.test(composerSourceUri) ||
+          composerSourceUri.length > 1800
+        ) {
+          const sourceKey = `markket-media-composer-source:${Date.now()}`;
+          await AsyncStorage.setItem(sourceKey, composerSourceUri);
+          params.sourceKey = sourceKey;
+        } else {
+          params.sourceUri = composerSourceUri;
+        }
       }
 
       router.push({
@@ -684,8 +1409,69 @@ export default function StoreMediaStudioScreen() {
         params,
       } as never);
     },
-    [activeSlot, resolvedStoreSlug, router, selectedMediaUrl]
+    [activeSlot, altSeed, draftMedia, resolvedStoreSlug, router, selectedColorSeed, selectedMediaUrl, storeTitleSeed, subtitleSeed]
   );
+
+  const fixSelectedForSlot = useCallback(async () => {
+    if (!selectedMediaUrl) {
+      Alert.alert('No image selected', 'Pick an image first.');
+      return;
+    }
+
+    if (selectedMediaUrl.startsWith('data:image/svg+xml')) {
+      Alert.alert('Already vector-safe', 'SVG drafts are already scalable. No size fix is required.');
+      return;
+    }
+
+    setFixingSlot(true);
+    let cleanupUri = '';
+    try {
+      let localUri = selectedMediaUrl;
+      if (/^https?:\/\//i.test(selectedMediaUrl)) {
+        const extensionMatch = selectedMediaUrl.match(/\.(jpg|jpeg|png|webp)(\?|$)/i);
+        const ext = extensionMatch?.[1]?.toLowerCase() || 'jpg';
+        const targetFile = new FileSystem.File(FileSystem.Paths.cache, `markket-fix-source-${Date.now()}.${ext}`);
+        const download = await FileSystem.File.downloadFileAsync(selectedMediaUrl, targetFile, { idempotent: true });
+        localUri = download.uri;
+        cleanupUri = download.uri;
+      }
+
+      const target = SLOT_TARGETS[activeSlot];
+      const manipulated = await ImageManipulator.manipulateAsync(
+        localUri,
+        [{ resize: { width: target.width, height: target.height } }],
+        { compress: target.compress, format: ImageManipulator.SaveFormat.JPEG }
+      );
+
+      const fileInfo = new FileSystem.File(manipulated.uri).info();
+      const fixedMedia: LocalMedia = {
+        key: `slot-fix-${Date.now()}`,
+        uri: manipulated.uri,
+        width: manipulated.width,
+        height: manipulated.height,
+        fileName: `markket-${activeSlot}-${Date.now()}.jpg`,
+        mime: 'image/jpeg',
+        fileSizeBytes: typeof fileInfo.size === 'number' ? fileInfo.size : undefined,
+        altText: selectedAltRaw || undefined,
+        sourceLabel: 'slot-auto-fix',
+        colorSeed: selectedColorSeed,
+      };
+
+      applyIncomingDraftToSlot(fixedMedia, activeSlot, activeIndex);
+      Alert.alert('Slot fixed', 'Image resized and compressed for this slot.');
+    } catch {
+      Alert.alert('Fix failed', 'Could not process this image right now.');
+    } finally {
+      if (cleanupUri) {
+        try {
+          new FileSystem.File(cleanupUri).delete();
+        } catch {
+          // Ignore cache cleanup failures.
+        }
+      }
+      setFixingSlot(false);
+    }
+  }, [activeIndex, activeSlot, applyIncomingDraftToSlot, selectedAltRaw, selectedColorSeed, selectedMediaUrl]);
 
   const copyCurrentImageLink = useCallback(async () => {
     if (!selectedMediaUrl) {
@@ -696,6 +1482,148 @@ export default function StoreMediaStudioScreen() {
     await Clipboard.setStringAsync(selectedMediaUrl);
     Alert.alert('Copied', 'Image link copied.');
   }, [selectedMediaUrl]);
+
+  const publishLocalChanges = useCallback(async (): Promise<boolean> => {
+    if (!session?.token) {
+      Alert.alert('Sign in required', 'Log in again to publish media changes.');
+      return false;
+    }
+
+    if (changedSlotCount <= 0) {
+      Alert.alert('Nothing to publish', 'Stage and apply a slot replacement first.');
+      return false;
+    }
+
+    if (typeof store?.id !== 'number') {
+      Alert.alert('Store missing', 'Could not resolve this store ID for publishing.');
+      return false;
+    }
+
+    setPublishingChanges(true);
+    try {
+      const userId = await resolveUserId();
+      if (!userId) {
+        Alert.alert('Account required', 'Could not validate your account for publishing.');
+        return false;
+      }
+
+      const slotMediaToPublish = effectiveSlotMedia;
+      const uploadedIds: Partial<Record<MediaSlot, number[]>> = {};
+      const coverTarget = getUploadTargetForSlot(store, 'cover');
+      const seoSocialTarget = getUploadTargetForSlot(store, 'seoSocial');
+      const logoTarget = getUploadTargetForSlot(store, 'logo');
+      const slidesTarget = getUploadTargetForSlot(store, 'slides');
+
+      if (slotMediaToPublish.cover.length) {
+        const uploaded = await uploadLocalMediaToProxy(slotMediaToPublish.cover[0], session.token, userId, coverTarget);
+        uploadedIds.cover = [Number(uploaded.id)];
+      }
+      if (slotMediaToPublish.seoSocial.length) {
+        const uploaded = await uploadLocalMediaToProxy(
+          slotMediaToPublish.seoSocial[0],
+          session.token,
+          userId,
+          seoSocialTarget
+        );
+        uploadedIds.seoSocial = [Number(uploaded.id)];
+      }
+      if (slotMediaToPublish.logo.length) {
+        const uploaded = await uploadLocalMediaToProxy(slotMediaToPublish.logo[0], session.token, userId, logoTarget);
+        uploadedIds.logo = [Number(uploaded.id)];
+      }
+      if (slotMediaToPublish.slides.length) {
+        const slidesToUpload = slotMediaToPublish.slides.filter(
+          (slide) => cleanText(slide.sourceLabel).toLowerCase() !== 'remote'
+        );
+        const slideIds: number[] = [];
+        for (const slide of slidesToUpload) {
+          const uploaded = await uploadLocalMediaToProxy(slide, session.token, userId, slidesTarget);
+          slideIds.push(Number(uploaded.id));
+        }
+        if (slideIds.length) uploadedIds.slides = slideIds;
+      }
+
+      // Build final slides array: kept existing remote slides + newly uploaded slides
+      const finalSlideIds: number[] = [];
+      if (slotMediaToPublish.slides.length > 0) {
+        // Add existing remote slides that are kept
+        for (const slide of slotMediaToPublish.slides) {
+          if (cleanText(slide.sourceLabel).toLowerCase() === 'remote' && slide.mediaId) {
+            finalSlideIds.push(Number(slide.mediaId));
+          }
+        }
+        // Add newly uploaded slide IDs
+        if (uploadedIds.slides?.length) {
+          finalSlideIds.push(...uploadedIds.slides);
+        }
+      }
+
+      // If slides were modified, sync the final list to the store
+      if (slotMediaToPublish.slides.length > 0 && finalSlideIds.length > 0) {
+        try {
+          const storeUpdateUrl = `${displayBaseUrl}api/markket?path=/api/stores/${store.id}`;
+          const storeUpdateHeaders = {
+            Authorization: `Bearer ${session.token}`,
+            'markket-user-id': String(userId),
+            'Content-Type': 'application/json',
+          };
+          const storeUpdatePayload = {
+            data: {
+              Slides: finalSlideIds,
+            },
+          };
+          const updateResponse = await fetch(storeUpdateUrl, {
+            method: 'PUT',
+            headers: storeUpdateHeaders,
+            body: JSON.stringify(storeUpdatePayload),
+          });
+          if (!updateResponse.ok) {
+            console.warn('[MediaStudio] Store slides update returned status', updateResponse.status);
+          }
+        } catch (updateErr) {
+          console.warn('[MediaStudio] Store slides update failed:', updateErr);
+        }
+      }
+
+      console.info('[MediaStudio] publish success', {
+        storeId: store.id,
+        storeDocumentId: cleanText(store.documentId || ''),
+        seoId:
+          typeof (store.SEO || store.seo)?.id === 'number' || typeof (store.SEO || store.seo)?.id === 'string'
+            ? String((store.SEO || store.seo)?.id)
+            : '',
+        uploadedIds,
+        finalSlideIds,
+      });
+
+      setLocalSlotMedia({
+        cover: [],
+        seoSocial: [],
+        logo: [],
+        slides: [],
+      });
+      setDraftMedia(null);
+      setShowReplaceToast(false);
+      setReplaceUndoSnapshot(null);
+      await loadStoreMedia();
+      Alert.alert('Published', 'Store media was updated successfully.');
+      return true;
+    } catch (err) {
+      Alert.alert('Publish failed', err instanceof Error ? err.message : 'Unknown publish error.');
+      return false;
+    } finally {
+      setPublishingChanges(false);
+    }
+  }, [
+    changedSlotCount,
+    displayBaseUrl,
+    effectiveSlotMedia,
+    loadStoreMedia,
+    resolveUserId,
+    session?.token,
+    store,
+    uploadLocalMediaToProxy,
+  ]);
 
   const shareCurrentImage = useCallback(async () => {
     if (!selectedMediaUrl) {
@@ -763,19 +1691,18 @@ export default function StoreMediaStudioScreen() {
 
     async function consumeComposerDraft() {
       if (!resolvedDraftKey) return;
+      if (lastConsumedDraftKeyRef.current === resolvedDraftKey) return;
+      lastConsumedDraftKeyRef.current = resolvedDraftKey;
 
       try {
         const raw = await AsyncStorage.getItem(resolvedDraftKey);
+        await AsyncStorage.removeItem(resolvedDraftKey);
         if (!raw || cancelled) return;
 
         const parsed = JSON.parse(raw) as ComposerDraftPayload;
         if (!parsed?.uri || !parsed?.key) return;
 
-        if (resolvedDraftSlot) {
-          setActiveSlot(resolvedDraftSlot);
-        }
-
-        setDraftMedia({
+        const incomingDraft: LocalMedia = {
           key: parsed.key,
           uri: parsed.uri,
           width: parsed.width,
@@ -784,14 +1711,21 @@ export default function StoreMediaStudioScreen() {
           mime: parsed.mime,
           altText: parsed.altText,
           sourceLabel: parsed.sourceLabel || 'composer',
-        });
+          colorSeed: normalizeHexColor(cleanText(parsed.colorSeed || '')),
+        };
+
+        const slotForDraft = resolvedDraftSlot || activeSlot;
+        const slotTargetIndex = slotForDraft === activeSlot ? activeIndex : 0;
+
+        applyIncomingDraftToSlot(incomingDraft, slotForDraft, slotTargetIndex);
+        requestAnimationFrame(() => scrollToPreview(true));
 
         await AsyncStorage.removeItem(resolvedDraftKey);
 
         if (!cancelled) {
-          router.replace({
-            pathname: '/store/[storeSlug]/media',
-            params: { storeSlug: resolvedStoreSlug },
+          navigation.setParams({
+            draftKey: undefined,
+            draftSlot: undefined,
           } as never);
         }
       } catch {
@@ -804,7 +1738,7 @@ export default function StoreMediaStudioScreen() {
     return () => {
       cancelled = true;
     };
-  }, [resolvedDraftKey, resolvedDraftSlot, resolvedStoreSlug, router]);
+  }, [activeIndex, activeSlot, applyIncomingDraftToSlot, navigation, resolvedDraftKey, resolvedDraftSlot, scrollToPreview]);
 
   if (!ready) {
     return (
@@ -827,7 +1761,8 @@ export default function StoreMediaStudioScreen() {
   return (
     <ThemedView style={styles.flex}>
       <ScrollView
-        contentContainerStyle={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 28 }]}
+        ref={scrollViewRef}
+        contentContainerStyle={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + (showDraftPreview ? 132 : 28) }]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
           <View style={styles.headingWrap}>
@@ -838,8 +1773,7 @@ export default function StoreMediaStudioScreen() {
           </View>
         </View>
 
-        <ThemedText style={styles.subtitle}>Manage your store visuals in one place.</ThemedText>
-        <ThemedText style={styles.subtitleAccent}>Preview, edit, save, and share in a few taps.</ThemedText>
+        <ThemedText style={styles.subtitle}>Pick an image, compose, publish.</ThemedText>
 
         <View style={styles.healthRow}>
           {slotCards.map((card) => {
@@ -862,7 +1796,7 @@ export default function StoreMediaStudioScreen() {
                 ]}
                 onPress={() => setActiveSlot(card.slot)}>
                 <ThemedText style={styles.healthCardTitle}>
-                  {card.label} · {card.health.label} ({card.count})
+                  {card.label} · {card.count}
                 </ThemedText>
                 <ThemedText style={styles.healthCardHint}>{card.health.hint}</ThemedText>
               </Pressable>
@@ -870,107 +1804,49 @@ export default function StoreMediaStudioScreen() {
           })}
         </View>
 
-        {loading ? (
-          <View style={styles.centerState}>
-            <ActivityIndicator size="small" />
-          </View>
-        ) : loadError ? (
-          <View style={styles.errorCard}>
-            <ThemedText style={styles.errorText}>{loadError}</ThemedText>
-            <Button label="Retry" variant="secondary" onPress={() => void loadStoreMedia()} />
-          </View>
-        ) : selectedMediaUrl ? (
-          <Pressable style={styles.previewWrap} onPress={() => setFullPreviewVisible(true)}>
-            <Image source={{ uri: selectedMediaUrl }} style={styles.previewImage} contentFit="cover" transition={180} />
-            <View style={styles.previewHintPill}>
-              <ThemedText style={styles.previewHintText}>Tap for full screen</ThemedText>
+        <ThemedText style={styles.sectionEyebrow}>Preview</ThemedText>
+
+        <Animated.View
+          entering={FadeInDown.duration(240).delay(60)}
+          onLayout={(event) => {
+            previewAnchorYRef.current = event.nativeEvent.layout.y;
+          }}>
+          {loading ? (
+            <View style={styles.centerState}>
+              <ActivityIndicator size="small" />
             </View>
-          </Pressable>
-        ) : (
-          <View style={styles.emptyCard}>
-            <ThemedText style={styles.emptyText}>No image assigned for this slot yet.</ThemedText>
-          </View>
-        )}
-
-        <View style={styles.actionRow}>
-          <Pressable style={styles.actionPill} onPress={() => void pickFromLibrary()}>
-            <ThemedText style={styles.actionPillText}>Choose Photo</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => void pickFromCamera()}>
-            <ThemedText style={styles.actionPillText}>Camera</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={clearLocalReplacement}>
-            <ThemedText style={styles.actionPillText}>Reset View</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => openComposer('from-photo')}>
-            <ThemedText style={styles.actionPillText}>Compose From Image</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => openComposer('from-scratch')}>
-            <ThemedText style={styles.actionPillText}>Compose From Scratch</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => void saveCurrentImageToCameraRoll()}>
-            <ThemedText style={styles.actionPillText}>Save to Photos</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => void shareCurrentImage()}>
-            <ThemedText style={styles.actionPillText}>Share Link</ThemedText>
-          </Pressable>
-          <Pressable style={styles.actionPill} onPress={() => void copyCurrentImageLink()}>
-            <ThemedText style={styles.actionPillText}>Copy Link</ThemedText>
-          </Pressable>
-        </View>
-
-        <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Draft</ThemedText>
-          {draftMedia ? (
-            <>
-              <View style={styles.previewWrap}>
-                <Image source={{ uri: draftMedia.uri }} style={styles.previewImage} contentFit="cover" transition={140} />
+          ) : loadError ? (
+            <View style={styles.errorCard}>
+              <ThemedText style={styles.errorText}>{loadError}</ThemedText>
+              <Button label="Retry" variant="secondary" onPress={() => void loadStoreMedia()} />
+            </View>
+          ) : selectedMediaUrl ? (
+            <Pressable style={styles.previewWrap} onPress={() => setFullPreviewVisible(true)}>
+              <Image source={{ uri: selectedMediaUrl }} style={styles.previewImage} contentFit="cover" transition={180} />
+                  {selectedMediaIsLocal ? (
+                    <Pressable style={styles.previewDiscardFab} onPress={clearLocalReplacement}>
+                      <ThemedText style={styles.previewDiscardFabText}>x</ThemedText>
+                    </Pressable>
+                  ) : null}
+                  {selectedMediaUrl ? (
+                    <Pressable
+                      style={styles.previewComposerFab}
+                      onPress={() => {
+                        void openComposer(selectedMediaIsLocal ? 'edit-existing' : 'from-photo');
+                      }}>
+                      <ThemedText style={styles.previewComposerFabText}>Compose</ThemedText>
+                    </Pressable>
+                  ) : null}
+              <View style={styles.previewHintPill}>
+                <ThemedText style={styles.previewHintText}>Tap for full screen</ThemedText>
               </View>
-              <ThemedText style={styles.infoLine}>Source: {draftMedia.sourceLabel || 'local'}</ThemedText>
-              {draftMedia.fileName ? <ThemedText style={styles.infoLine}>File: {draftMedia.fileName}</ThemedText> : null}
-              {draftMedia.altText ? <ThemedText style={styles.infoLine}>Alt: {draftMedia.altText}</ThemedText> : null}
-              <View style={styles.actionRow}>
-                <Pressable style={styles.actionPill} onPress={applyDraftToSlot}>
-                  <ThemedText style={styles.actionPillText}>Apply To Slot</ThemedText>
-                </Pressable>
-                <Pressable style={styles.actionPill} onPress={() => setDraftMedia(null)}>
-                  <ThemedText style={styles.actionPillText}>Discard Draft</ThemedText>
-                </Pressable>
-                <Pressable style={styles.actionPill} onPress={() => openComposer('edit-existing')}>
-                  <ThemedText style={styles.actionPillText}>Open Composer</ThemedText>
-                </Pressable>
-              </View>
-            </>
+            </Pressable>
           ) : (
-            <ThemedText style={styles.infoLine}>Choose from camera, photo library, or stock to stage a draft.</ThemedText>
+            <View style={styles.emptyCard}>
+              <ThemedText style={styles.emptyText}>No image assigned for this slot yet.</ThemedText>
+            </View>
           )}
-        </View>
-
-        <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Stock Search (Unsplash)</ThemedText>
-          <Input
-            value={stockQuery}
-            onChangeText={setStockQuery}
-            placeholder="Search public stock images"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <Button label={stockLoading ? 'Searching...' : 'Search Images'} variant="secondary" onPress={() => void searchStockImages()} disabled={stockLoading} />
-          {stockError ? <ThemedText style={styles.errorText}>{stockError}</ThemedText> : null}
-
-          {stockResults.length ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbRow}>
-              {stockResults.map((item) => (
-                <Pressable key={item.id} style={styles.thumbItem} onPress={() => selectStockImage(item)}>
-                  <Image source={{ uri: item.thumbUrl }} style={styles.thumbImage} contentFit="cover" transition={120} />
-                  <ThemedText numberOfLines={1} style={styles.stockMetaText}>
-                    {item.author || 'Unsplash'}
-                  </ThemedText>
-                </Pressable>
-              ))}
-            </ScrollView>
-          ) : null}
-        </View>
+        </Animated.View>
 
         {activeItems.length > 1 ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbRow}>
@@ -995,34 +1871,204 @@ export default function StoreMediaStudioScreen() {
           </ScrollView>
         ) : null}
 
-        <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Image Metadata</ThemedText>
-          <ThemedText style={styles.infoLine}>Alt text: {selectedAlt}</ThemedText>
-          <ThemedText style={styles.infoLine}>Filename: {selectedFilename}</ThemedText>
-          <ThemedText style={styles.infoLine}>Caption: {selectedCaption}</ThemedText>
-          <ThemedText style={styles.infoLine}>Type: {selectedMime}</ThemedText>
-          <ThemedText style={styles.infoLine}>Dimensions: {selectedDimensions}</ThemedText>
-          <ThemedText style={styles.infoLine}>Size: {selectedFileSize}</ThemedText>
-          <ThemedText style={styles.infoLine}>Updated: {formatDate(selectedMedia?.updatedAt)}</ThemedText>
-          <ThemedText style={styles.infoLine}>Created: {formatDate(selectedMedia?.createdAt)}</ThemedText>
-          {selectedMedia?.isLocal ? <ThemedText style={styles.infoLine}>Source: local preview replacement</ThemedText> : null}
-        </View>
+        {activeSlot !== 'slides' ? (
+          <>
+            <ThemedText style={styles.sectionEyebrow}>Add Image</ThemedText>
+            <View style={styles.actionRow}>
+              <Pressable style={styles.actionPill} onPress={() => void pickFromLibrary()}>
+                <ThemedText style={styles.actionPillText}>Choose Photo</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void pickFromCamera()}>
+                <ThemedText style={styles.actionPillText}>Camera</ThemedText>
+              </Pressable>
+              {showDraftPreview || activeSlotHasLocalPreview ? (
+                <Pressable style={styles.actionPill} onPress={clearLocalReplacement}>
+                  <ThemedText style={styles.actionPillText}>Start Over</ThemedText>
+                </Pressable>
+              ) : null}
+              <Pressable
+                style={[styles.actionPill, styles.actionPillPrimary]}
+                onPress={() => {
+                  void openComposer('from-photo');
+                }}>
+                <ThemedText style={[styles.actionPillText, styles.actionPillTextPrimary]}>Edit in Composer</ThemedText>
+              </Pressable>
+              <Pressable
+                style={[styles.actionPill, styles.actionPillStrong]}
+                onPress={() => {
+                  void openComposer('from-scratch');
+                }}>
+                <ThemedText style={styles.actionPillText}>Start Fresh</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void saveCurrentImageToCameraRoll()}>
+                <ThemedText style={styles.actionPillText}>Save to Photos</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void fixSelectedForSlot()}>
+                <ThemedText style={styles.actionPillText}>{fixingSlot ? 'Fixing...' : 'Auto-fix'}</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void shareCurrentImage()}>
+                <ThemedText style={styles.actionPillText}>Share Link</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void copyCurrentImageLink()}>
+                <ThemedText style={styles.actionPillText}>Copy Link</ThemedText>
+              </Pressable>
+            </View>
+          </>
+        ) : null}
+
+        {activeSlot === 'slides' ? (
+          <View style={styles.card}>
+            <ThemedText type="defaultSemiBold">Slides</ThemedText>
+            {duplicateSlidesCount > 0 ? (
+              <ThemedText style={styles.errorText}>
+                {duplicateSlidesCount} duplicate slide record{duplicateSlidesCount === 1 ? '' : 's'} hidden.
+              </ThemedText>
+            ) : null}
+            <ThemedText style={styles.infoLine}>
+              {activeItems.length ? `Slide ${Math.min(activeIndex + 1, activeItems.length)} of ${activeItems.length}` : 'Tap a thumbnail to select a slide.'}
+            </ThemedText>
+            <View style={styles.slideActionRow}>
+              <Pressable style={styles.slideActionIcon} onPress={() => moveSelectedSlide('left')}>
+                <MaterialIcons name="arrow-back" size={18} color="#0E7490" />
+              </Pressable>
+              <Pressable style={styles.slideActionIcon} onPress={() => moveSelectedSlide('right')}>
+                <MaterialIcons name="arrow-forward" size={18} color="#0E7490" />
+              </Pressable>
+              <Pressable style={styles.slideActionIcon} onPress={() => void openComposer('from-photo')}>
+                <MaterialIcons name="edit" size={18} color="#0E7490" />
+              </Pressable>
+              <Pressable style={[styles.slideActionIcon, styles.slideActionIconDanger]} onPress={removeSelectedSlide}>
+                <MaterialIcons name="delete-outline" size={18} color="#B91C1C" />
+              </Pressable>
+            </View>
+            <ThemedText style={[styles.sectionEyebrow, styles.inlineSectionEyebrow]}>Add Slide</ThemedText>
+            <View style={styles.slideActionRow}>
+              <Pressable style={styles.slideActionIcon} onPress={() => void pickFromLibrary()}>
+                <MaterialIcons name="photo-library" size={18} color="#0E7490" />
+              </Pressable>
+              <Pressable style={styles.slideActionIcon} onPress={() => void pickFromCamera()}>
+                <MaterialIcons name="photo-camera" size={18} color="#0E7490" />
+              </Pressable>
+              <Pressable style={styles.slideActionIcon} onPress={() => void openComposer('from-scratch')}>
+                <MaterialIcons name="auto-awesome" size={18} color="#0E7490" />
+              </Pressable>
+            </View>
+            {activeSlot === 'slides' && (showDraftPreview || activeSlotHasLocalPreview) ? (
+              <Pressable style={styles.actionPill} onPress={clearLocalReplacement}>
+                <ThemedText style={styles.actionPillText}>Clear Preview</ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        {activeSlot !== 'slides' ? (
+          <View style={styles.card}>
+            <ThemedText type="defaultSemiBold">Edit</ThemedText>
+            {selectedMediaUrl ? (
+              <View style={styles.actionRow}>
+                <Pressable style={styles.actionPill} onPress={() => void saveCurrentImageToCameraRoll()}>
+                <ThemedText style={styles.actionPillText}>Save to Photos</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void fixSelectedForSlot()}>
+                <ThemedText style={styles.actionPillText}>{fixingSlot ? 'Fixing...' : 'Auto-fix'}</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void shareCurrentImage()}>
+                <ThemedText style={styles.actionPillText}>Share Link</ThemedText>
+              </Pressable>
+              <Pressable style={styles.actionPill} onPress={() => void copyCurrentImageLink()}>
+                <ThemedText style={styles.actionPillText}>Copy Link</ThemedText>
+              </Pressable>
+            </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {showDraftPreview ? (
+          <Animated.View entering={FadeInDown.duration(240).delay(140)} style={styles.card}>
+            <ThemedText type="defaultSemiBold">Draft Preview</ThemedText>
+            <View style={styles.previewWrap}>
+              <Image source={{ uri: draftMedia?.uri }} style={styles.previewImage} contentFit="cover" transition={140} />
+            </View>
+            <Input
+              value={draftMedia?.altText || ''}
+              onChangeText={updateDraftAltText}
+              placeholder="Alt text (accessibility)"
+              autoCapitalize="sentences"
+              autoCorrect
+            />
+            <View style={styles.actionRow}>
+              <Pressable
+                style={[styles.actionPill, styles.actionPillStrong]}
+                onPress={() => {
+                  void openComposer('edit-existing');
+                }}>
+                <ThemedText style={styles.actionPillText}>Continue In Composer</ThemedText>
+              </Pressable>
+            </View>
+          </Animated.View>
+        ) : null}
+
+        {changedSlotCount > 0 ? (
+          <View style={styles.card}>
+            <ThemedText type="defaultSemiBold">Go Live</ThemedText>
+            {selectedQuality.notes[0] ? <ThemedText style={styles.infoLine}>{selectedQuality.notes[0]}</ThemedText> : null}
+            <ThemedText style={styles.infoLine}>{changedSlotCount} change{changedSlotCount === 1 ? '' : 's'} ready.</ThemedText>
+            <Button
+              label={publishingChanges ? 'Publishing...' : 'Publish Changes Now'}
+              variant="primary"
+              disabled={publishingChanges}
+              onPress={() => void publishLocalChanges()}
+            />
+          </View>
+        ) : null}
 
         <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Suggested Sizes</ThemedText>
-          <ThemedText style={styles.infoLine}>Cover: 1600x900, JPG/WEBP, up to 2MB.</ThemedText>
-          <ThemedText style={styles.infoLine}>SEO.socialImage: 1200x630, JPG/WEBP, up to 1.5MB.</ThemedText>
-          <ThemedText style={styles.infoLine}>Logo: 1024x1024 square PNG/WEBP, up to 1MB.</ThemedText>
-          <ThemedText style={styles.infoLine}>Slides: 1440x1800 (4:5) or 1600x900, up to 2MB each.</ThemedText>
-          <ThemedText style={styles.infoLine}>Keep central subjects inside safe margins for social crops.</ThemedText>
-        </View>
+          <ThemedText type="defaultSemiBold">Stock Photos</ThemedText>
+          <View style={styles.stockSourceRow}>
+            <Pressable
+              style={[styles.stockSourcePill, stockSource === 'unsplash' && styles.stockSourcePillActive]}
+              onPress={() => setStockSource('unsplash')}>
+              <ThemedText style={[styles.stockSourcePillText, stockSource === 'unsplash' && styles.stockSourcePillTextActive]}>Unsplash</ThemedText>
+            </Pressable>
+            <Pressable
+              style={[styles.stockSourcePill, stockSource === 'getty' && styles.stockSourcePillActive]}
+              onPress={() => setStockSource('getty')}>
+              <ThemedText style={[styles.stockSourcePillText, stockSource === 'getty' && styles.stockSourcePillTextActive]}>Getty</ThemedText>
+            </Pressable>
+            <Pressable
+              style={[styles.stockSourcePill, stockSource === 'pexels' && styles.stockSourcePillActive]}
+              onPress={() => setStockSource('pexels')}>
+              <ThemedText style={[styles.stockSourcePillText, stockSource === 'pexels' && styles.stockSourcePillTextActive]}>Pexels</ThemedText>
+            </Pressable>
+          </View>
+          <Input
+            value={stockQuery}
+            onChangeText={setStockQuery}
+            placeholder={`Search ${stockSource} images`}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            onSubmitEditing={() => {
+              if (!stockLoading) {
+                void searchStockImages();
+              }
+            }}
+          />
+          <Button label={stockLoading ? 'Searching...' : `Search ${stockSource}`} variant="secondary" onPress={() => void searchStockImages()} disabled={stockLoading} />
+          {stockError ? <ThemedText style={styles.errorText}>{stockError}</ThemedText> : null}
 
-        <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Publishing (Coming Soon)</ThemedText>
-          <ThemedText style={styles.infoLine}>Direct upload and publish will arrive in the next update.</ThemedText>
-          <ThemedText style={styles.infoLine}>For now, you can save to Photos, share links, and prepare polished drafts.</ThemedText>
-          <Button label="Publish Changes (Soon)" variant="secondary" disabled onPress={() => {}} />
-          <Button label="Open Store Editor" variant="secondary" onPress={openStoreEditor} />
+          {stockResults.length ? (
+            <View style={styles.stockGrid}>
+              {stockResults.map((item) => (
+                <Pressable key={item.id} style={styles.stockGridItem} onPress={() => selectStockImage(item)}>
+                  <Image source={{ uri: item.thumbUrl }} style={styles.stockThumbImage} contentFit="cover" transition={120} />
+                  <ThemedText numberOfLines={1} style={styles.stockMetaText}>
+                    {item.author || 'Unsplash'}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
         </View>
 
         <Modal visible={fullPreviewVisible} animationType="fade" transparent onRequestClose={() => setFullPreviewVisible(false)}>
@@ -1036,6 +2082,50 @@ export default function StoreMediaStudioScreen() {
           </View>
         </Modal>
       </ScrollView>
+
+      {showReplaceToast ? (
+        <Animated.View entering={FadeInDown.duration(180)} style={[styles.replaceToast, { bottom: insets.bottom + (showDraftPreview ? 114 : 14) }]}>
+          <View style={styles.replaceToastDot} />
+          <View style={styles.replaceToastInfo}>
+            <ThemedText style={styles.replaceToastTitle}>Preview updated</ThemedText>
+            <ThemedText style={styles.replaceToastHint}>Not published yet.</ThemedText>
+          </View>
+          <Pressable style={styles.replaceToastUndoButton} onPress={undoReplaceSlotPreview}>
+            <ThemedText style={styles.replaceToastUndoText}>Undo</ThemedText>
+          </Pressable>
+        </Animated.View>
+      ) : null}
+
+      {showDraftPreview ? (
+        <Animated.View entering={FadeInDown.duration(220)} style={[styles.unsavedDock, { paddingBottom: insets.bottom + 18 }]}>
+          <View style={styles.dockTopRow}>
+            <View style={styles.dockDot} />
+            <ThemedText style={styles.dockLabel}>Draft ready</ThemedText>
+            <View style={styles.dockDot} />
+          </View>
+          <View style={styles.dockActionRow}>
+            <Pressable style={styles.dockDiscardButton} onPress={discardDraftMedia}>
+              <ThemedText style={styles.dockDiscardButtonText}>Discard</ThemedText>
+            </Pressable>
+            <Pressable style={styles.dockSaveButton} onPress={applyDraftToSlot}>
+              <ThemedText style={styles.dockSaveButtonText}>Apply to Slot</ThemedText>
+            </Pressable>
+          </View>
+        </Animated.View>
+      ) : changedSlotCount > 0 ? (
+          <Animated.View entering={FadeInDown.duration(220)} style={[styles.unsavedDock, { paddingBottom: insets.bottom + 18 }]}>
+          <View style={styles.dockTopRow}>
+            <View style={styles.dockDot} />
+            <ThemedText style={styles.dockLabel}>{changedSlotCount} change{changedSlotCount === 1 ? '' : 's'} ready</ThemedText>
+            <View style={styles.dockDot} />
+          </View>
+          <View style={styles.dockActionRow}>
+            <Pressable style={styles.dockSaveButton} onPress={() => void publishLocalChanges()}>
+              <ThemedText style={styles.dockSaveButtonText}>{publishingChanges ? 'Publishing...' : 'Publish Changes'}</ThemedText>
+            </Pressable>
+          </View>
+        </Animated.View>
+      ) : null}
     </ThemedView>
   );
 }
@@ -1046,7 +2136,7 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: 18,
-    gap: 12,
+    gap: 14,
   },
   centerState: {
     flex: 1,
@@ -1108,14 +2198,19 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     lineHeight: 34,
+    fontFamily: 'GilroyBlack',
+    letterSpacing: 0.2,
   },
   storeTag: {
     fontSize: 13,
     lineHeight: 18,
     opacity: 0.7,
+    fontFamily: 'Manrope',
   },
   subtitle: {
     opacity: 0.76,
+    fontFamily: 'Manrope',
+    lineHeight: 20,
   },
   subtitleAccent: {
     marginTop: -2,
@@ -1123,11 +2218,22 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     fontSize: 13,
     lineHeight: 18,
+    fontFamily: 'SpaceGrotesk',
+  },
+  sectionEyebrow: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: 'RobotoMono',
+    letterSpacing: 0.45,
+    textTransform: 'uppercase',
+    color: '#0C4A6E',
+    opacity: 0.75,
+    marginTop: 4,
   },
   healthRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     flexWrap: 'wrap',
   },
   healthCard: {
@@ -1190,6 +2296,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
+  previewDiscardFab: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.45)',
+    backgroundColor: 'rgba(185,28,28,0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewDiscardFabText: {
+    color: '#FEF2F2',
+    fontSize: 16,
+    lineHeight: 16,
+    fontWeight: '800',
+    fontFamily: 'SpaceGrotesk',
+  },
+  previewComposerFab: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+    backgroundColor: 'rgba(14,116,144,0.88)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  previewComposerFabText: {
+    color: '#ECFEFF',
+    fontSize: 11,
+    fontWeight: '800',
+    fontFamily: 'SpaceGrotesk',
+  },
   previewHintText: {
     color: '#E2E8F0',
     fontSize: 11,
@@ -1242,19 +2385,106 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     opacity: 0.72,
   },
+  stockSourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  stockSourcePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.25)',
+    backgroundColor: 'rgba(248,250,252,0.95)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  stockSourcePillActive: {
+    borderColor: '#0E7490',
+    backgroundColor: '#0E7490',
+  },
+  stockSourcePillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0E7490',
+    letterSpacing: 0.2,
+  },
+  stockSourcePillTextActive: {
+    color: '#F0FDFF',
+  },
+  stockGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  stockGridItem: {
+    width: '31%',
+    minWidth: 98,
+    maxWidth: 132,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.24)',
+    padding: 2,
+    backgroundColor: 'rgba(240,249,255,0.9)',
+  },
+  stockThumbImage: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: 8,
+    backgroundColor: 'rgba(148,163,184,0.3)',
+  },
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     flexWrap: 'wrap',
+  },
+  slideActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    justifyContent: 'flex-start',
+  },
+  slideActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14,116,144,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.24)',
+  },
+  slideActionIconDanger: {
+    backgroundColor: 'rgba(220,38,38,0.08)',
+    borderColor: 'rgba(220,38,38,0.24)',
   },
   actionPill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(14,116,144,0.3)',
-    backgroundColor: 'rgba(240,249,255,0.96)',
-    paddingHorizontal: 11,
-    paddingVertical: 7,
+    borderColor: 'rgba(14,116,144,0.22)',
+    backgroundColor: 'rgba(248,250,252,0.98)',
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    minHeight: 38,
+    justifyContent: 'center',
+  },
+  actionPillStrong: {
+    borderColor: 'rgba(14,116,144,0.45)',
+    backgroundColor: 'rgba(240,249,255,0.98)',
+  },
+  actionPillPrimary: {
+    borderColor: '#0E7490',
+    backgroundColor: '#0E7490',
+    shadowColor: '#0E7490',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  actionPillDanger: {
+    borderColor: 'rgba(220,38,38,0.55)',
+    backgroundColor: 'rgba(254,242,242,0.95)',
   },
   actionPillText: {
     fontSize: 11,
@@ -1262,19 +2492,36 @@ const styles = StyleSheet.create({
     color: '#0E7490',
     letterSpacing: 0.2,
   },
+  actionPillTextPrimary: {
+    color: '#F0FDFF',
+  },
+  actionPillTextDanger: {
+    color: '#B91C1C',
+  },
   card: {
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(120,120,120,0.26)',
     backgroundColor: 'rgba(248,250,252,0.92)',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    gap: 8,
+  },
+  advancedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  advancedInfoWrap: {
+    flex: 1,
   },
   infoLine: {
     fontSize: 13,
     lineHeight: 20,
     opacity: 0.84,
+  },
+  inlineSectionEyebrow: {
+    marginTop: 10,
   },
   emptyCard: {
     borderRadius: 14,
@@ -1329,5 +2576,146 @@ const styles = StyleSheet.create({
   previewModalImage: {
     width: '100%',
     height: '100%',
+  },
+  replaceToast: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.35)',
+    backgroundColor: 'rgba(240,249,255,0.98)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#0E7490',
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  replaceToastDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: '#0891B2',
+  },
+  replaceToastInfo: {
+    flex: 1,
+    gap: 1,
+  },
+  replaceToastTitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#0C4A6E',
+    fontWeight: '700',
+    fontFamily: 'SpaceGrotesk',
+  },
+  replaceToastHint: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#0F172A',
+    opacity: 0.72,
+    fontFamily: 'Manrope',
+  },
+  replaceToastUndoButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.85)',
+    backgroundColor: '#0E7490',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    minHeight: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  replaceToastUndoText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#ECFEFF',
+    letterSpacing: 0.15,
+    fontFamily: 'SpaceGrotesk',
+  },
+  unsavedDock: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.45)',
+    backgroundColor: 'rgba(236,254,255,0.96)',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    gap: 10,
+    shadowColor: '#0E7490',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+  dockTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  dockDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: '#0891B2',
+    opacity: 0.7,
+  },
+  dockLabel: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#0C4A6E',
+    fontFamily: 'RobotoMono',
+    letterSpacing: 0.2,
+  },
+  dockActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dockDiscardButton: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(185,28,28,0.35)',
+    backgroundColor: 'rgba(254,242,242,0.95)',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    minHeight: 38,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dockDiscardButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B91C1C',
+    fontFamily: 'SpaceGrotesk',
+  },
+  dockSaveButton: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.88)',
+    backgroundColor: '#0E7490',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    minHeight: 38,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dockSaveButtonText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#ECFEFF',
+    fontFamily: 'SpaceGrotesk',
+    letterSpacing: 0.15,
   },
 });

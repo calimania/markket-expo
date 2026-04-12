@@ -3,8 +3,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
@@ -192,6 +192,18 @@ export default function ProfileScreen() {
     me?.avatar?.url ||
     ''
   );
+  const localOrdersByStore = useMemo(() => {
+    const grouped = new Map<string, LocalReceiptSummary[]>();
+    for (const order of recentOrders) {
+      const slug = cleanText(order.storeSlug);
+      if (!slug) continue;
+      const current = grouped.get(slug) || [];
+      current.push(order);
+      grouped.set(slug, current);
+    }
+    return grouped;
+  }, [recentOrders]);
+  const canCreateStore = stores.length < 2;
 
   useEffect(() => {
     let cancelled = false;
@@ -342,9 +354,8 @@ export default function ProfileScreen() {
         page += 1;
       }
 
-      const activeStores = allStores.filter((store) => store.active !== false);
       setAuthExpired(false);
-      setStores(activeStores);
+      setStores(allStores);
     } catch {
       setStores([]);
     } finally {
@@ -354,13 +365,18 @@ export default function ProfileScreen() {
 
   const openStoreEditor = (storeSlug?: string) => {
     if (!storeSlug) {
-      Alert.alert('Store unavailable', 'This store does not have a slug.');
+      Alert.alert('Store unavailable', 'This store link is missing right now.');
       return;
     }
 
     const storeEditorUrl = `${displayBaseUrl}tienda/${storeSlug}/store?display=embed`;
-    router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0' } } as never);
+    router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0', closeOnExit: '1' } } as never);
   };
+
+  const openCreateStore = useCallback(() => {
+    const createStoreUrl = `${displayBaseUrl}tienda/new?display=embed`;
+    router.push({ pathname: '/web', params: { url: createStoreUrl, captureAuth: '0' } } as never);
+  }, [displayBaseUrl, router]);
 
   const openStoresDirectory = () => {
     router.push('/stores' as never);
@@ -368,7 +384,7 @@ export default function ProfileScreen() {
 
   const openStoreContentList = (storeSlug?: string) => {
     if (!storeSlug) {
-      Alert.alert('Store unavailable', 'This store does not have a slug.');
+      Alert.alert('Store unavailable', 'This store link is missing right now.');
       return;
     }
 
@@ -380,13 +396,25 @@ export default function ProfileScreen() {
 
   const openStoreMediaStudio = (storeSlug?: string) => {
     if (!storeSlug) {
-      Alert.alert('Store unavailable', 'This store does not have a slug.');
+      Alert.alert('Store unavailable', 'This store link is missing right now.');
       return;
     }
 
     router.push({
       pathname: '/store/[storeSlug]/media',
       params: { storeSlug },
+    } as never);
+  };
+
+  const openStorePreview = (storeSlug?: string) => {
+    if (!storeSlug) {
+      Alert.alert('Store unavailable', 'This store link is missing right now.');
+      return;
+    }
+
+    router.push({
+      pathname: '/store/[slug]',
+      params: { slug: storeSlug },
     } as never);
   };
 
@@ -419,9 +447,9 @@ export default function ProfileScreen() {
     ]);
   };
 
-  const checkMe = async () => {
+  const checkMe = useCallback(async () => {
     if (!session?.token) {
-      Alert.alert('No session token', 'Log in from WebView first so the app can capture your auth token.');
+      Alert.alert('You are signed out', 'Please sign in again to load your account.');
       return;
     }
 
@@ -470,7 +498,7 @@ export default function ProfileScreen() {
     } finally {
       setChecking(false);
     }
-  };
+  }, [apiBaseUrl, expireSessionToMagicLogin, magicEmail, saveToken, session?.source, session?.token]);
 
   const uploadAvatar = async () => {
     if (!session?.token) {
@@ -552,6 +580,28 @@ export default function ProfileScreen() {
     void loadUserStores();
   }, [loadUserStores, session?.token]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session?.token) return undefined;
+
+      void checkMe();
+      void loadUserStores();
+      void (async () => {
+        const viewerKey = getReceiptViewerKey({
+          userId: session?.userId,
+          email: session?.email,
+          token: session?.token,
+        });
+
+        const orders = await getLocalReceipts(viewerKey);
+        const unexpiredOrders = orders.filter((order) => !isExpiredByCreatedAt(order.createdAt, LOCAL_ORDER_TTL_MS));
+        setRecentOrders(unexpiredOrders.slice(0, 8));
+      })();
+
+      return undefined;
+    }, [checkMe, loadUserStores, session?.email, session?.token, session?.userId])
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -589,35 +639,67 @@ export default function ProfileScreen() {
 
     setSavingProfile(true);
 
-    const payload = {
-      id: me.id,
-      username: cleanText(me.username || me.email || ''),
-      email: cleanText(me.email || ''),
+    const profilePatch = {
       bio: cleanText(bioInput),
       displayName: cleanText(displayNameInput),
     };
 
-    try {
-      const response = await fetch(updateProfileUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.token}`,
-        },
-        body: JSON.stringify(payload),
-      });
+    const normalizedApiBase = cleanText(apiBaseUrl).replace(/\/$/, '');
+    const directUserUrl = `${normalizedApiBase}/api/users/${me.id}`;
+    const meUserUrl = `${normalizedApiBase}/api/users/me`;
 
-      if (!response.ok) {
-        throw new Error(`Update failed (${response.status})`);
+    const attempts: {
+      url: string;
+      method: 'PATCH' | 'PUT';
+      body: Record<string, unknown>;
+    }[] = [
+        { url: updateProfileUrl, method: 'PATCH', body: profilePatch },
+        { url: updateProfileUrl, method: 'PUT', body: profilePatch },
+        { url: updateProfileUrl, method: 'PUT', body: { data: profilePatch } },
+        { url: meUserUrl, method: 'PATCH', body: profilePatch },
+        { url: meUserUrl, method: 'PUT', body: profilePatch },
+        { url: directUserUrl, method: 'PUT', body: profilePatch },
+        { url: directUserUrl, method: 'PATCH', body: profilePatch },
+      ];
+
+    try {
+      let updateSucceeded = false;
+      let lastStatus = 0;
+      let lastBody = '';
+
+      for (const attempt of attempts) {
+        const response = await fetch(attempt.url, {
+          method: attempt.method,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.token}`,
+          },
+          body: JSON.stringify(attempt.body),
+        });
+
+        if (response.ok) {
+          updateSucceeded = true;
+          break;
+        }
+
+        lastStatus = response.status;
+        lastBody = (await response.text()).slice(0, 220);
+        if (response.status !== 400 && response.status !== 401 && response.status !== 404 && response.status !== 405) {
+          break;
+        }
+      }
+
+      if (!updateSucceeded) {
+        throw new Error(`Update failed (${lastStatus}) ${lastBody}`.trim());
       }
 
       setMe((prev) => ({
         ...(prev || {}),
-        id: payload.id,
-        username: payload.username,
-        email: payload.email,
-        bio: payload.bio,
-        displayName: payload.displayName,
+        id: me.id,
+        username: cleanText(me.username || me.email || ''),
+        email: cleanText(me.email || ''),
+        bio: profilePatch.bio,
+        displayName: profilePatch.displayName,
         updatedAt: new Date().toISOString(),
       }));
 
@@ -632,7 +714,7 @@ export default function ProfileScreen() {
   };
 
   const clearRecentOrders = () => {
-    Alert.alert('Clear local order history?', 'This only clears order memory on this device.', [
+    Alert.alert('Clear order history on this device?', 'This only clears order history on this phone.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Clear',
@@ -654,7 +736,7 @@ export default function ProfileScreen() {
 
   const openRecentOrder = (order: LocalReceiptSummary) => {
     if (isExpiredByCreatedAt(order.createdAt, LOCAL_ORDER_TTL_MS)) {
-      Alert.alert('Order expired', 'This local order record has expired on this device.');
+      Alert.alert('Order expired', 'This order record has expired on this device.');
       return;
     }
 
@@ -674,7 +756,7 @@ export default function ProfileScreen() {
 
   const requestMagicLink = async () => {
     if (!canRequestMagic) {
-      Alert.alert('Missing fields', 'Add a valid email and store ID first.');
+      Alert.alert('Missing details', 'Add a valid email and store first.');
       return;
     }
 
@@ -697,7 +779,7 @@ export default function ProfileScreen() {
 
       Alert.alert(
         'Magic link requested',
-        `Check your inbox for the login link. If email delivery is slow, message ${WHATSAPP_MAGIC_LABEL} on WhatsApp with "${WHATSAPP_MAGIC_TEXT}" for the faster path.`
+        `Check your inbox for the login link, then tap Open in Markket when prompted. If email delivery is slow, message ${WHATSAPP_MAGIC_LABEL} on WhatsApp with "${WHATSAPP_MAGIC_TEXT}" for the faster path.`
       );
     } catch (err) {
       Alert.alert('Could not request link', err instanceof Error ? err.message : 'Unknown API error');
@@ -777,7 +859,7 @@ export default function ProfileScreen() {
             <View style={styles.cardHeaderRow}>
               <ThemedText type="defaultSemiBold">Profile</ThemedText>
               <Pressable style={styles.editPill} onPress={() => setIsEditingProfile((prev) => !prev)}>
-                <ThemedText style={styles.editPillText}>{isEditingProfile ? 'Cancel' : 'Edit'}</ThemedText>
+                <ThemedText style={styles.editPillText}>{isEditingProfile ? 'Cancel Edit' : 'Edit Profile'}</ThemedText>
               </Pressable>
             </View>
 
@@ -832,8 +914,9 @@ export default function ProfileScreen() {
           <View style={styles.card}>
             <ThemedText type="defaultSemiBold">Your Stores</ThemedText>
             <ThemedText style={styles.infoLine}>
-              Showing your first 3 stores.
+              Your active stores.
             </ThemedText>
+            {canCreateStore ? <Button label="Create New Store" variant="secondary" onPress={openCreateStore} /> : null}
             {loadingStores ? (
               <View style={[styles.profileSummaryWrap, { alignItems: 'center' }]}>
                 <ActivityIndicator size="small" style={styles.loader} />
@@ -865,10 +948,20 @@ export default function ProfileScreen() {
                         {store.slug ? (
                           <ThemedText style={styles.infoLine}>{store.slug}</ThemedText>
                         ) : null}
+                        {store.slug ? (
+                          <ThemedText style={styles.storeMetaLine}>
+                            Orders on this device: {localOrdersByStore.get(store.slug)?.length || 0}
+                          </ThemedText>
+                        ) : null}
                       </View>
                     </View>
 
                     <View style={styles.storeActionsRow}>
+                      <Pressable
+                        style={({ pressed }) => [styles.storeActionPill, pressed && styles.storeChipPressed]}
+                        onPress={() => openStorePreview(store.slug)}>
+                        <ThemedText style={styles.storeActionText}>Preview</ThemedText>
+                      </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.storeActionPill, pressed && styles.storeChipPressed]}
                         onPress={() => openStoreEditor(store.slug)}>
@@ -882,7 +975,7 @@ export default function ProfileScreen() {
                       <Pressable
                         style={({ pressed }) => [styles.storeActionPill, pressed && styles.storeChipPressed]}
                         onPress={() => openStoreContentList(store.slug)}>
-                        <ThemedText style={styles.storeActionText}>Lists</ThemedText>
+                        <ThemedText style={styles.storeActionText}>Content</ThemedText>
                       </Pressable>
                     </View>
                   </View>
@@ -897,15 +990,18 @@ export default function ProfileScreen() {
                 ) : null}
               </View>
             ) : (
-              <ThemedText style={styles.infoLine}>No stores found. Create one at markket.place to manage it here.</ThemedText>
+                  <ThemedText style={styles.infoLine}>No stores yet. Create one and it will show up here.</ThemedText>
             )}
+            {!loadingStores && !canCreateStore ? (
+              <ThemedText style={styles.infoLine}>You have reached the store limit for this account. Reach out if you need more.</ThemedText>
+            ) : null}
           </View>
         ) : null}
 
         <View style={styles.card}>
-          <ThemedText type="defaultSemiBold">Recent Orders (This Device)</ThemedText>
+          <ThemedText type="defaultSemiBold">Purchase History</ThemedText>
           <ThemedText style={styles.infoLine}>
-            Local order history saved on this device. Orders expire after 7 days.
+            Your recent purchases, saved on this device for 7 days.
           </ThemedText>
 
           {recentOrders.length ? (
@@ -918,27 +1014,56 @@ export default function ProfileScreen() {
                   </ThemedText>
                   <ThemedText style={styles.infoLine}>{formatLocalDate(order.createdAt)}</ThemedText>
                   {order.storeSlug ? (
-                    <ThemedText style={styles.infoLine}>Store: {order.storeSlug}</ThemedText>
+                    <ThemedText style={styles.infoLine}>From: {order.storeSlug}</ThemedText>
                   ) : null}
                   {order.customerEmail ? (
                     <ThemedText style={styles.infoLine}>Email: {order.customerEmail}</ThemedText>
                   ) : null}
-                  <ThemedText style={styles.infoLine}>Session: {maskSessionId(order.sessionId)}</ThemedText>
+                  <ThemedText style={styles.infoLine}>Order ID: {maskSessionId(order.sessionId)}</ThemedText>
                   <ThemedText style={styles.openReceiptHint}>Tap to open receipt</ThemedText>
                 </Pressable>
               ))}
             </View>
           ) : (
-            <ThemedText style={styles.infoLine}>No local orders yet on this device.</ThemedText>
+              <ThemedText style={styles.infoLine}>No purchases yet on this device.</ThemedText>
           )}
 
-          <Button label="Clear Local Orders" variant="ghost" onPress={clearRecentOrders} />
+          {recentOrders.length ? <Button label="Clear Purchase History" variant="ghost" onPress={clearRecentOrders} /> : null}
         </View>
+
+        {session?.token ? (
+          <View style={styles.card}>
+            <ThemedText type="defaultSemiBold">Sales Activity</ThemedText>
+            <ThemedText style={styles.infoLine}>
+              Orders placed through your stores on this device.
+            </ThemedText>
+
+            {stores.length ? (
+              <View style={styles.profileSummaryWrap}>
+                {stores.slice(0, 3).map((store) => {
+                  const slug = cleanText(store.slug);
+                  const count = slug ? localOrdersByStore.get(slug)?.length || 0 : 0;
+
+                  return (
+                    <View key={`seller-history-${store.id}`} style={styles.summaryChip}>
+                      <ThemedText style={styles.summaryChipLabel}>Store</ThemedText>
+                      <ThemedText style={styles.summaryChipValue}>{store.title || slug || 'Unnamed Store'}</ThemedText>
+                      <ThemedText style={styles.infoLine}>Orders on this device: {count}</ThemedText>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <ThemedText style={styles.infoLine}>No sales activity yet on this device.</ThemedText>
+            )}
+          </View>
+        ) : null}
 
         {!session?.token && showEmailMagicForm ? (
           <View style={styles.card}>
             <ThemedText type="defaultSemiBold">Email Magic Link</ThemedText>
             <ThemedText style={styles.infoLine}>{storeIdStatus}</ThemedText>
+            <ThemedText style={styles.magicHint}>After opening the email link, choose Open in Markket to return here.</ThemedText>
             <Input
               value={magicEmail}
               onChangeText={setMagicEmail}
@@ -954,6 +1079,8 @@ export default function ProfileScreen() {
             />
           </View>
         ) : null}
+
+
       </ScrollView>
     </ThemedView>
   );
@@ -1078,6 +1205,11 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     opacity: 0.85,
   },
+  magicHint: {
+    fontSize: 12,
+    lineHeight: 18,
+    opacity: 0.72,
+  },
   editPill: {
     borderRadius: 999,
     borderWidth: 1,
@@ -1125,6 +1257,12 @@ const styles = StyleSheet.create({
   storeChipContent: {
     flex: 1,
     gap: 2,
+  },
+  storeMetaLine: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#0E7490',
+    opacity: 0.82,
   },
   storeActionsRow: {
     marginTop: 8,

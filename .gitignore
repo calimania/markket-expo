@@ -47,3 +47,4 @@ app-example
 *.draft.*
 .idea
 _logs
+.env.local
