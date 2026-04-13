@@ -1,4 +1,5 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
@@ -17,6 +18,8 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppConfig } from '@/hooks/use-app-config';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import { apiGet } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { SkeletonCard } from '@/components/ui/skeleton';
 
@@ -588,8 +591,26 @@ function resolveSeoMetaDescription(entity: { SEO?: { metaDescription?: string };
   return cleanText(entity.SEO?.metaDescription || entity.seo?.metaDescription || '');
 }
 
+function dedupeImageAssets<T extends { url?: string; formats?: { medium?: { url?: string }; small?: { url?: string }; thumbnail?: { url?: string } } }>(
+  items: T[] | null | undefined
+): T[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  items.forEach((item, index) => {
+    const identity = cleanText(item.formats?.medium?.url || item.formats?.small?.url || item.formats?.thumbnail?.url || item.url || '') || `index:${index}`;
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    deduped.push(item);
+  });
+
+  return deduped;
+}
+
 function resolveProductImage(product: Product): string {
-  const slides = product.Slides ?? product.slides ?? [];
+  const slides = dedupeImageAssets(product.Slides ?? product.slides ?? []);
   const firstSlide = Array.isArray(slides) ? slides[0] : null;
 
   return cleanText(
@@ -744,6 +765,7 @@ export default function StoreScreen() {
       previewLocale?: string | string[];
     }>();
   const { apiBaseUrl, displayBaseUrl, linkOpenMode, ready } = useAppConfig();
+  const { session } = useAuthSession();
 
   const slugValue = Array.isArray(slug) ? slug[0] : slug;
   const previewTitleValue = Array.isArray(previewTitle) ? previewTitle[0] : previewTitle;
@@ -780,12 +802,65 @@ export default function StoreScreen() {
   const [pagesError, setPagesError] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  const [userOwnedStores, setUserOwnedStores] = useState<Set<string>>(new Set());
+  const [, setCheckingOwnership] = useState(false);
 
   const openExternalUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {
       Alert.alert('Could not open URL', url);
     });
   }, []);
+
+  const checkStoreOwnership = useCallback(async () => {
+    if (!session?.token || !cleanSlug) return;
+
+    setCheckingOwnership(true);
+    try {
+      let userId =
+        typeof session.userId === 'number'
+          ? session.userId
+          : typeof session.userId === 'string' && session.userId.trim()
+            ? session.userId.trim()
+            : null;
+
+      if (!userId) {
+        const meResult = await apiGet<{ id?: number }>('/api/users/me', {
+          baseUrl: apiBaseUrl,
+          token: session.token,
+        });
+        if (meResult.ok && typeof meResult.data?.id === 'number') {
+          userId = meResult.data.id;
+        }
+      }
+
+      if (!userId) return;
+
+      const headers = {
+        Authorization: `Bearer ${session.token}`,
+        'markket-user-id': String(userId),
+        'Content-Type': 'application/json',
+      };
+
+      const storeProxyBase = `${displayBaseUrl}api/markket/store`;
+      const response = await fetch(`${storeProxyBase}?pagination[pageSize]=100`, { headers });
+
+      if (response.ok) {
+        const payload = (await response.json()) as { data?: { slug?: string }[] } | { slug?: string }[];
+        const stores = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+        const ownedSlugs = new Set(
+          stores
+            .map((s) => {
+              const slug = s?.slug;
+              return typeof slug === 'string' ? slug.trim() : '';
+            })
+            .filter(Boolean)
+        );
+        setUserOwnedStores(ownedSlugs);
+      }
+    } finally {
+      setCheckingOwnership(false);
+    }
+  }, [apiBaseUrl, displayBaseUrl, session?.token, session?.userId, cleanSlug]);
 
   const openUrlChoice = useCallback(
     (url: string, label: string) => {
@@ -919,6 +994,7 @@ export default function StoreScreen() {
     setProductsError(null);
     setPagesError(null);
     setEventsError(null);
+    void checkStoreOwnership();
 
     try {
       const storeInfoResult = await fetchStoreInfo();
@@ -992,7 +1068,7 @@ export default function StoreScreen() {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, cleanSlug, fetchJson, fetchStoreArticles, fetchStoreInfo, fetchStorePages, ready]);
+  }, [apiBaseUrl, checkStoreOwnership, cleanSlug, fetchJson, fetchStoreArticles, fetchStoreInfo, fetchStorePages, ready]);
 
   useEffect(() => {
     load();
@@ -1260,7 +1336,37 @@ export default function StoreScreen() {
           )}
 
           <View style={styles.heroActions}>
+            {userOwnedStores.has(cleanSlug) && (
+              <>
+                <Pressable
+                  style={styles.secondaryHeroButton}
+                  onPress={() => router.push({ pathname: `/store/${cleanSlug}/media` } as never)}
+                >
+                  <MaterialIcons name="photo-library" size={15} color="#0E7490" />
+                  <ThemedText style={styles.secondaryHeroButtonText}>Edit Media</ThemedText>
+                </Pressable>
+                <Pressable
+                  style={styles.secondaryHeroButton}
+                  onPress={() =>
+                    router.push(
+                      {
+                        pathname: '/web',
+                        params: {
+                          url: `${displayBaseUrl}tienda/${cleanSlug}/store?display=embed`,
+                          captureAuth: '0',
+                          closeOnExit: '1',
+                        },
+                      } as never
+                    )
+                  }
+                >
+                  <MaterialIcons name="dashboard" size={15} color="#0E7490" />
+                  <ThemedText style={styles.secondaryHeroButtonText}>Dashboard</ThemedText>
+                </Pressable>
+              </>
+            )}
             <Pressable style={styles.secondaryHeroButton} onPress={shareStore}>
+              <MaterialIcons name="ios-share" size={15} color="#0E7490" />
               <ThemedText style={styles.secondaryHeroButtonText}>Share Store</ThemedText>
             </Pressable>
             <ThemedText style={styles.heroUrlHint}>{storefrontUrl.replace('https://', '')}</ThemedText>
@@ -1733,26 +1839,33 @@ const styles = StyleSheet.create({
   },
   heroActions: {
     marginTop: 6,
-    gap: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
   },
   secondaryHeroButton: {
     alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: 'rgba(8,145,178,0.4)',
     backgroundColor: 'rgba(255,255,255,0.92)',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
   secondaryHeroButtonText: {
     color: '#0E7490',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
   heroUrlHint: {
     fontSize: 11,
     opacity: 0.62,
+    marginLeft: 2,
   },
   loadingStage: {
     borderRadius: 16,

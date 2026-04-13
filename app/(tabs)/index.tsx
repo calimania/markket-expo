@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   ActivityIndicator,
@@ -172,6 +173,7 @@ type EventsApiResponse = {
 type Page = {
   id: number;
   slug?: string;
+  title?: string;
   Title?: string;
   updatedAt?: string;
   SEO?: {
@@ -188,6 +190,46 @@ type Page = {
 
 type PagesApiResponse = {
   data: Page[];
+};
+
+type HomeCopy = {
+  headerTitle: string;
+  headerSubtitle: string;
+  featuredLabel: string;
+  articlesLabel: string;
+  articlesMeta: string;
+  productsLabel: string;
+  productsMeta: string;
+  storiesLabel: string;
+  storiesMeta: string;
+  eventsLabel: string;
+  eventsMeta: string;
+};
+
+type HomeSnapshotCache = {
+  savedAt: number;
+  activeStores: Store[];
+  articles: Article[];
+  products: Product[];
+  pages: Page[];
+  events: Event[];
+};
+
+const HOME_SNAPSHOT_CACHE_KEY = 'markket-home-snapshot-v1';
+const HOME_SNAPSHOT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
+
+const DEFAULT_HOME_COPY: HomeCopy = {
+  headerTitle: 'markket',
+  headerSubtitle: '',
+  featuredLabel: 'Featured',
+  articlesLabel: 'Latest Articles',
+  articlesMeta: 'across all stores',
+  productsLabel: 'Discover New Products',
+  productsMeta: 'across all stores',
+  storiesLabel: 'Stories & Guides',
+  storiesMeta: 'from all stores',
+  eventsLabel: 'Upcoming Events',
+  eventsMeta: 'sorted by date',
 };
 
 type StoresApiResponse = {
@@ -227,7 +269,7 @@ function getUpdatedAtTime(store: Store): number {
 }
 
 function previewDescription(description: string | null): string {
-  if (!description) return 'No description yet.';
+  if (!description) return '';
 
   return description
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
@@ -258,16 +300,112 @@ function getThumbnailUrl(image: { url?: string; formats?: { small?: { url?: stri
   return image.formats?.small?.url ?? image.formats?.thumbnail?.url ?? image.url ?? null;
 }
 
+function dedupeSlides<T extends { url?: string; formats?: { small?: { url?: string }; thumbnail?: { url?: string } } }>(
+  items: T[] | null | undefined
+): T[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  items.forEach((item, index) => {
+    const identity = (item.formats?.small?.url ?? item.formats?.thumbnail?.url ?? item.url ?? '').trim() || `index:${index}`;
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    deduped.push(item);
+  });
+
+  return deduped;
+}
+
 function formatEventDate(dateStr?: string | null): string {
   if (!dateStr) return '';
   const d = new Date(dateStr);
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function normalizeCopyValue(value: unknown, fallback: string, maxLength = 64): string {
+  if (typeof value !== 'string') return fallback;
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (!clean) return fallback;
+  return clean.slice(0, maxLength);
+}
+
+function readStringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function normalizeSlug(value: string | undefined | null): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function resolveHomeCopy(page: Page | null): HomeCopy {
+  if (!page) return DEFAULT_HOME_COPY;
+
+  const record = page as unknown as Record<string, unknown>;
+  const ui = typeof record.ui === 'object' && record.ui ? (record.ui as Record<string, unknown>) : {};
+  const labels = typeof record.labels === 'object' && record.labels ? (record.labels as Record<string, unknown>) : {};
+
+  const headerTitleRaw =
+    readStringField(record, 'homeTitle') ||
+    readStringField(record, 'title') ||
+    readStringField(record, 'Title') ||
+    readStringField(ui, 'headerTitle');
+
+  const headerSubtitleRaw =
+    readStringField(record, 'homeSubtitle') ||
+    readStringField(record, 'subtitle') ||
+    readStringField(ui, 'headerSubtitle');
+
+  const articlesLabel = normalizeCopyValue(
+    readStringField(record, 'articlesLabel') || readStringField(labels, 'articles') || readStringField(ui, 'articlesLabel'),
+    DEFAULT_HOME_COPY.articlesLabel,
+    40,
+  );
+  const storiesLabelCandidate = normalizeCopyValue(
+    readStringField(record, 'storiesLabel') || readStringField(labels, 'stories') || readStringField(ui, 'storiesLabel'),
+    DEFAULT_HOME_COPY.storiesLabel,
+    40,
+  );
+  const storiesLabel =
+    storiesLabelCandidate.trim().toLowerCase() === articlesLabel.trim().toLowerCase()
+      ? DEFAULT_HOME_COPY.storiesLabel
+      : storiesLabelCandidate;
+
+  return {
+    headerTitle: normalizeCopyValue(headerTitleRaw, DEFAULT_HOME_COPY.headerTitle, 28),
+    headerSubtitle: normalizeCopyValue(headerSubtitleRaw, DEFAULT_HOME_COPY.headerSubtitle, 80),
+    featuredLabel: normalizeCopyValue(
+      readStringField(record, 'featuredLabel') || readStringField(labels, 'featured') || readStringField(ui, 'featuredLabel'),
+      DEFAULT_HOME_COPY.featuredLabel,
+      28,
+    ),
+    articlesLabel,
+    articlesMeta: normalizeCopyValue(readStringField(ui, 'articlesMeta'), DEFAULT_HOME_COPY.articlesMeta, 48),
+    productsLabel: normalizeCopyValue(
+      readStringField(record, 'productsLabel') || readStringField(labels, 'products') || readStringField(ui, 'productsLabel'),
+      DEFAULT_HOME_COPY.productsLabel,
+      40,
+    ),
+    productsMeta: normalizeCopyValue(readStringField(ui, 'productsMeta'), DEFAULT_HOME_COPY.productsMeta, 48),
+    storiesLabel,
+    storiesMeta: normalizeCopyValue(readStringField(ui, 'storiesMeta'), DEFAULT_HOME_COPY.storiesMeta, 48),
+    eventsLabel: normalizeCopyValue(
+      readStringField(record, 'eventsLabel') || readStringField(labels, 'events') || readStringField(ui, 'eventsLabel'),
+      DEFAULT_HOME_COPY.eventsLabel,
+      40,
+    ),
+    eventsMeta: normalizeCopyValue(readStringField(ui, 'eventsMeta'), DEFAULT_HOME_COPY.eventsMeta, 48),
+  };
+}
+
 export default function HomeScreen() {
   const router = useRouter();
-  const { apiBaseUrl, linkOpenMode, ready, storesQuery } = useAppConfig();
+  const { apiBaseUrl, linkOpenMode, ready, storesQuery, defaultStoreSlug, contentStoreSlug } = useAppConfig();
   const insets = useSafeAreaInsets();
+  const targetStoreSlug = normalizeSlug(defaultStoreSlug);
+  const fallbackContentSlug = normalizeSlug(contentStoreSlug);
 
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
@@ -280,7 +418,35 @@ export default function HomeScreen() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchDraft, setSearchDraft] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
+  const [homeCopy, setHomeCopy] = useState<HomeCopy>(DEFAULT_HOME_COPY);
   const searchInputRef = useRef<TextInput | null>(null);
+  const cacheRef = useRef<HomeSnapshotCache | null>(null);
+  const useSnapshotFirstRef = useRef(false);
+
+  const persistSnapshot = useCallback(
+    (partial: Partial<Omit<HomeSnapshotCache, 'savedAt'>>) => {
+      const current =
+        cacheRef.current ??
+        ({
+          savedAt: Date.now(),
+          activeStores: [],
+          articles: [],
+          products: [],
+          pages: [],
+          events: [],
+        } as HomeSnapshotCache);
+
+      const next: HomeSnapshotCache = {
+        ...current,
+        ...partial,
+        savedAt: Date.now(),
+      };
+
+      cacheRef.current = next;
+      void AsyncStorage.setItem(HOME_SNAPSHOT_CACHE_KEY, JSON.stringify(next)).catch(() => undefined);
+    },
+    []
+  );
 
   const loadStores = useCallback(async (targetPage: number, mode: 'replace' | 'append' = 'replace') => {
     if (!ready) return;
@@ -336,17 +502,83 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!ready) return;
+
+    let cancelled = false;
+
+    async function hydrateSnapshot() {
+      try {
+        const raw = await AsyncStorage.getItem(HOME_SNAPSHOT_CACHE_KEY);
+        if (!raw || cancelled) return;
+
+        const parsed = JSON.parse(raw) as Partial<HomeSnapshotCache>;
+        if (typeof parsed.savedAt !== 'number') return;
+        if (Date.now() - parsed.savedAt > HOME_SNAPSHOT_MAX_AGE_MS) return;
+
+        const cachedActiveStores = Array.isArray(parsed.activeStores) ? parsed.activeStores : [];
+        const cachedArticles = Array.isArray(parsed.articles) ? parsed.articles : [];
+        const cachedProducts = Array.isArray(parsed.products) ? parsed.products : [];
+        const cachedPages = Array.isArray(parsed.pages) ? parsed.pages : [];
+        const cachedEvents = Array.isArray(parsed.events) ? parsed.events : [];
+
+        cacheRef.current = {
+          savedAt: parsed.savedAt,
+          activeStores: cachedActiveStores,
+          articles: cachedArticles,
+          products: cachedProducts,
+          pages: cachedPages,
+          events: cachedEvents,
+        };
+
+        const hasCachedContent =
+          cachedActiveStores.length > 0 ||
+          cachedArticles.length > 0 ||
+          cachedProducts.length > 0 ||
+          cachedPages.length > 0 ||
+          cachedEvents.length > 0;
+        useSnapshotFirstRef.current = hasCachedContent;
+
+        setActiveStores(cachedActiveStores);
+        setArticles(cachedArticles);
+        setProducts(cachedProducts);
+        setPages(cachedPages);
+        setEvents(cachedEvents);
+
+        setActiveStoresLoading(false);
+        setArticlesLoading(false);
+        setProductsLoading(false);
+        setPagesLoading(false);
+        setEventsLoading(false);
+      } catch {
+        // Ignore malformed snapshots.
+      }
+    }
+
+    void hydrateSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (refreshKey === 0 && useSnapshotFirstRef.current) return;
     setActiveStoresLoading(true);
     const url = `/api/stores?filters[active][$eq]=true&sort[0]=updatedAt:desc&populate[]=Logo&populate[]=URLS&pagination[pageSize]=20`;
     apiGet<StoresApiResponse>(url, { baseUrl: apiBaseUrl })
       .then((result) => {
         if (result.ok && result.data) {
-          setActiveStores(result.data.data ?? []);
+          const next = result.data.data ?? [];
+          setActiveStores(next);
+          persistSnapshot({ activeStores: next });
+        } else {
+          setActiveStores([]);
+          persistSnapshot({ activeStores: [] });
         }
       })
       .catch(() => { })
       .finally(() => setActiveStoresLoading(false));
-  }, [apiBaseUrl, ready, refreshKey]);
+  }, [apiBaseUrl, persistSnapshot, ready, refreshKey]);
 
   const activeSortedStores = useMemo(
     () =>
@@ -364,63 +596,123 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!ready) return;
+    if (refreshKey === 0 && useSnapshotFirstRef.current) return;
     setArticlesLoading(true);
     const url = `/api/articles?sort[0]=updatedAt:desc&populate[]=cover&populate[]=store&pagination[pageSize]=8`;
     apiGet<ArticlesApiResponse>(url, { baseUrl: apiBaseUrl })
       .then((result) => {
         if (result.ok && result.data?.data) {
-          setArticles(result.data.data);
+          const next = result.data.data;
+          setArticles(next);
+          persistSnapshot({ articles: next });
         } else {
           setArticles([]);
+          persistSnapshot({ articles: [] });
         }
       })
       .catch(() => setArticles([]))
       .finally(() => setArticlesLoading(false));
-  }, [apiBaseUrl, ready, refreshKey]);
+  }, [apiBaseUrl, persistSnapshot, ready, refreshKey]);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
 
   useEffect(() => {
     if (!ready) return;
+    if (refreshKey === 0 && useSnapshotFirstRef.current) return;
     setProductsLoading(true);
     const url = `/api/products?sort[0]=updatedAt:desc&populate[]=PRICES&populate[]=SEO.socialImage&populate[]=Thumbnail&populate[]=Slides&populate[]=stores&pagination[pageSize]=8`;
     apiGet<ProductsApiResponse>(url, { baseUrl: apiBaseUrl })
       .then((result) => {
         if (result.ok && result.data?.data) {
-          setProducts(result.data.data);
+          const next = result.data.data;
+          setProducts(next);
+          persistSnapshot({ products: next });
         } else {
           setProducts([]);
+          persistSnapshot({ products: [] });
         }
       })
       .catch(() => setProducts([]))
       .finally(() => setProductsLoading(false));
-  }, [apiBaseUrl, ready, refreshKey]);
+  }, [apiBaseUrl, persistSnapshot, ready, refreshKey]);
 
   const [pages, setPages] = useState<Page[]>([]);
   const [pagesLoading, setPagesLoading] = useState(true);
 
   useEffect(() => {
     if (!ready) return;
+
+    let cancelled = false;
+
+    const requests = [
+      '/api/pages?filters[slug][$eq]=home&filters[active][$eq]=true&populate[]=store&pagination[pageSize]=25',
+      '/api/pages?filters[slug][$eq]=home&populate[]=store&pagination[pageSize]=25',
+      '/api/pages?filters[slug]=home&populate[]=store&pagination[pageSize]=25',
+      '/api/pages?filter[slug][$eq]=home&populate[]=store&pagination[pageSize]=25',
+      '/api/pages?filter[slug]=home&populate[]=store&pagination[pageSize]=25',
+    ];
+
+    async function loadHomeCopy() {
+      for (const path of requests) {
+        const result = await apiGet<PagesApiResponse>(path, { baseUrl: apiBaseUrl });
+        if (!result.ok) continue;
+
+        const rows = result.data?.data ?? [];
+        if (!rows.length) continue;
+
+        const preferred =
+          rows.find((entry) => normalizeSlug(entry.store?.slug) === targetStoreSlug) ||
+          rows.find((entry) => normalizeSlug(entry.store?.slug) === fallbackContentSlug) ||
+          rows.find((entry) => !normalizeSlug(entry.store?.slug)) ||
+          rows[0] ||
+          null;
+        if (!preferred) continue;
+
+        if (!cancelled) {
+          setHomeCopy(resolveHomeCopy(preferred));
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setHomeCopy(DEFAULT_HOME_COPY);
+      }
+    }
+
+    void loadHomeCopy();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, ready, refreshKey, targetStoreSlug, fallbackContentSlug]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (refreshKey === 0 && useSnapshotFirstRef.current) return;
     setPagesLoading(true);
     const url = `/api/pages?sort[0]=updatedAt:desc&populate[]=SEO.socialImage&populate[]=store&pagination[pageSize]=8`;
     apiGet<PagesApiResponse>(url, { baseUrl: apiBaseUrl })
       .then((result) => {
         if (result.ok && result.data?.data) {
-          setPages(result.data.data);
+          const next = result.data.data;
+          setPages(next);
+          persistSnapshot({ pages: next });
         } else {
           setPages([]);
+          persistSnapshot({ pages: [] });
         }
       })
       .catch(() => setPages([]))
       .finally(() => setPagesLoading(false));
-  }, [apiBaseUrl, ready, refreshKey]);
+  }, [apiBaseUrl, persistSnapshot, ready, refreshKey]);
 
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
 
   useEffect(() => {
     if (!ready) return;
+    if (refreshKey === 0 && useSnapshotFirstRef.current) return;
     setEventsLoading(true);
     // Show events from yesterday onward so today's events still appear
     const yesterday = new Date();
@@ -432,18 +724,25 @@ export default function HomeScreen() {
       .then((result) => {
         if (result.ok && result.data?.data) {
           console.log('[events] loaded', result.data.data.length, 'events');
-          setEvents(result.data.data);
+          const next = result.data.data.filter((item) => {
+            const storeSlugs = (item.stores || []).map((entry) => normalizeSlug(entry?.slug));
+            return !targetStoreSlug || storeSlugs.includes(targetStoreSlug);
+          });
+          setEvents(next);
+          persistSnapshot({ events: next });
         } else {
           console.warn('[events] bad result', result);
           setEvents([]);
+          persistSnapshot({ events: [] });
         }
       })
       .catch((err) => {
         console.error('[events] fetch error', err);
         setEvents([]);
+        persistSnapshot({ events: [] });
       })
       .finally(() => setEventsLoading(false));
-  }, [apiBaseUrl, ready, refreshKey]);
+  }, [apiBaseUrl, persistSnapshot, ready, refreshKey, targetStoreSlug]);
 
   // Debounce loading states to avoid flashing skeletons on quick loads (>400ms)
   const [debouncedActiveStoresLoading, setDebouncedActiveStoresLoading] = useState(true);
@@ -600,8 +899,7 @@ export default function HomeScreen() {
               <View style={styles.titleBlock}>
                 <ThemedText type="subtitle" style={styles.storeTitle}>
                   {item.title}
-                </ThemedText>
-                <ThemedText style={styles.slug}>/{item.slug}</ThemedText>
+                  </ThemedText>
               </View>
             </View>
 
@@ -610,14 +908,11 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <ThemedText style={styles.description} numberOfLines={3}>
-            {previewDescription(item.Description)}
-          </ThemedText>
-
-          <View style={styles.metaRow}>
-            <ThemedText style={styles.meta}>Locale {item.locale.toUpperCase()}</ThemedText>
-            <ThemedText style={styles.meta}>Tap to open</ThemedText>
-          </View>
+            {previewDescription(item.Description) ? (
+              <ThemedText style={styles.description} numberOfLines={3}>
+                {previewDescription(item.Description)}
+              </ThemedText>
+            ) : null}
 
           {item.URLS?.length ? (
             <View style={styles.urlRow}>
@@ -641,7 +936,7 @@ export default function HomeScreen() {
     return (
       <ThemedView style={styles.centerState}>
         <ActivityIndicator size="large" />
-        <ThemedText style={styles.centerText}>Loading markket stores...</ThemedText>
+        <ThemedText style={styles.centerText}>Loading stores...</ThemedText>
       </ThemedView>
     );
   }
@@ -663,8 +958,9 @@ export default function HomeScreen() {
         <View style={styles.headerRow}>
           <View style={styles.headerTextWrap}>
             <ThemedText type="title" style={styles.headerTitle}>
-              markket
+              {homeCopy.headerTitle}
             </ThemedText>
+            {homeCopy.headerSubtitle ? <ThemedText style={styles.headerSubtitle}>{homeCopy.headerSubtitle}</ThemedText> : null}
           </View>
           <Pressable
             style={styles.searchToggle}
@@ -686,7 +982,7 @@ export default function HomeScreen() {
               ref={searchInputRef}
               value={searchDraft}
               onChangeText={setSearchDraft}
-              placeholder="Search stores by name or slug..."
+              placeholder="Search stores by name..."
               autoCapitalize="none"
               autoCorrect={false}
               returnKeyType="search"
@@ -715,7 +1011,7 @@ export default function HomeScreen() {
             <View style={styles.heroSection}>
               {featuredStore ? (
               <>
-                <ThemedText type="label" style={styles.heroLabel}>Our Fav</ThemedText>
+                  <ThemedText type="label" style={styles.heroLabel}>{homeCopy.featuredLabel}</ThemedText>
                 <Pressable
                   onPress={() => openStoreBySlug(featuredStore.slug, featuredStore)}
                   style={({ pressed }) => [styles.featuredWrap, pressed && styles.cardPressed]}>
@@ -789,15 +1085,15 @@ export default function HomeScreen() {
               </>
               ) : debouncedActiveStoresLoading ? (
               <>
-                <ThemedText type="label" style={styles.heroLabel}>Our Fav</ThemedText>
+                    <ThemedText type="label" style={styles.heroLabel}>{homeCopy.featuredLabel}</ThemedText>
                 <SkeletonCard />
               </>
               ) : null}
 
               <View style={styles.carouselSection}>
                 <View style={styles.carouselHeader}>
-                  <ThemedText type="label" style={styles.carouselLabel}>Latest Articles</ThemedText>
-                  <ThemedText type="mono" style={styles.carouselMeta}>across all stores</ThemedText>
+                  <ThemedText type="label" style={styles.carouselLabel}>{homeCopy.articlesLabel}</ThemedText>
+                  <ThemedText type="mono" style={styles.carouselMeta}>{homeCopy.articlesMeta}</ThemedText>
                 </View>
                 {debouncedArticlesLoading ? (
                   <ScrollView
@@ -855,8 +1151,8 @@ export default function HomeScreen() {
               </View>
               <View style={styles.carouselSection}>
               <View style={styles.carouselHeader}>
-                <ThemedText type="label" style={styles.carouselLabel}>Discover New Products</ThemedText>
-                <ThemedText type="mono" style={styles.carouselMeta}>across all stores</ThemedText>
+                  <ThemedText type="label" style={styles.carouselLabel}>{homeCopy.productsLabel}</ThemedText>
+                  <ThemedText type="mono" style={styles.carouselMeta}>{homeCopy.productsMeta}</ThemedText>
               </View>
               {debouncedProductsLoading ? (
                 <ScrollView
@@ -877,7 +1173,8 @@ export default function HomeScreen() {
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.carouselContent}>
                   {products.map((product) => {
-                    const firstSlide = product.Slides?.[0] ?? product.slides?.[0] ?? null;
+                    const uniqueSlides = dedupeSlides(product.Slides ?? product.slides ?? []);
+                    const firstSlide = uniqueSlides[0] ?? null;
                     const imgUrl =
                       firstSlide?.formats?.small?.url ??
                       firstSlide?.formats?.thumbnail?.url ??
@@ -944,8 +1241,8 @@ export default function HomeScreen() {
 
             <View style={styles.carouselSection}>
               <View style={styles.carouselHeader}>
-                <ThemedText type="label" style={styles.carouselLabel}>Latest Pages</ThemedText>
-                <ThemedText type="mono" style={styles.carouselMeta}>stories & guides</ThemedText>
+                  <ThemedText type="label" style={styles.carouselLabel}>{homeCopy.storiesLabel}</ThemedText>
+                  <ThemedText type="mono" style={styles.carouselMeta}>{homeCopy.storiesMeta}</ThemedText>
               </View>
               {debouncedPagesLoading ? (
                 <ScrollView
@@ -1002,8 +1299,8 @@ export default function HomeScreen() {
 
             <View style={styles.carouselSection}>
               <View style={styles.carouselHeader}>
-                <ThemedText type="label" style={styles.carouselLabel}>Upcoming Events</ThemedText>
-                <ThemedText type="mono" style={styles.carouselMeta}>sorted by date</ThemedText>
+                  <ThemedText type="label" style={styles.carouselLabel}>{homeCopy.eventsLabel}</ThemedText>
+                  <ThemedText type="mono" style={styles.carouselMeta}>{homeCopy.eventsMeta}</ThemedText>
               </View>
               {debouncedEventsLoading ? (
                 <ScrollView
@@ -1084,9 +1381,7 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {listStores.length ? (
-              <ThemedText type="label" style={styles.collectionLabel}>All Stores</ThemedText>
-            ) : null}
+
 
               {activeSearch ? (
                 <View style={styles.searchResultRow}>
@@ -1098,8 +1393,7 @@ export default function HomeScreen() {
               ) : null}
             </View>
           ) : (
-            <View style={styles.searchModeHeader}>
-              <ThemedText type="label" style={styles.collectionLabel}>Store Results</ThemedText>
+              <View style={styles.searchModeHeader}>
               {activeSearch ? (
                 <View style={styles.searchResultRow}>
                   <ThemedText style={styles.searchResultText}>{`Results for "${activeSearch}"`}</ThemedText>
@@ -1113,15 +1407,15 @@ export default function HomeScreen() {
         }
         ListEmptyComponent={
           <ThemedView style={styles.emptyState}>
-            <ThemedText type="subtitle">No stores found</ThemedText>
-            <ThemedText>{activeSearch ? 'No matching stores. Try another search term.' : 'Try pulling down to refresh.'}</ThemedText>
+            <ThemedText type="subtitle">No stores yet</ThemedText>
+            <ThemedText>{activeSearch ? `Nothing matched "${activeSearch}".` : 'Pull down to refresh.'}</ThemedText>
           </ThemedView>
         }
         ListFooterComponent={
           loadingMore ? (
             <View style={styles.loadingMoreRow}>
               <ActivityIndicator size="small" />
-              <ThemedText style={styles.loadingMoreText}>Loading more stores...</ThemedText>
+              <ThemedText style={styles.loadingMoreText}>Loading more...</ThemedText>
             </View>
           ) : null
         }

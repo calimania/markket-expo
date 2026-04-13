@@ -43,7 +43,7 @@ export default function MagicAuthBridgeScreen() {
   }, [buildWebMagicUrl, router]);
 
   const openProfile = useCallback(() => {
-    router.replace('/profile' as never);
+    router.replace({ pathname: '/profile', params: { section: 'stores' } } as never);
   }, [router]);
 
   function extractToken(payload: unknown): string {

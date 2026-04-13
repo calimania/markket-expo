@@ -1,6 +1,9 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { ActivityIndicator, Alert, Animated, Linking, Pressable, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 import { ThemedText } from '@/components/themed-text';
@@ -18,6 +21,15 @@ const TOKEN_KEYS = ['token', 'jwt', 'access_token', 'accessToken', 'auth_token',
 function getHost(url: string): string {
   try {
     return new URL(url).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function getPath(url: string): string {
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, '');
+    return path || '/';
   } catch {
     return '';
   }
@@ -105,6 +117,36 @@ const injectedCaptureScript = `
   true;
 })();`;
 
+const injectedLinkInterceptorScript = `
+(() => {
+  const postExternal = (url) => {
+    if (!url || !window.ReactNativeWebView) return;
+    window.ReactNativeWebView.postMessage(
+      JSON.stringify({ type: 'MARKKET_OPEN_EXTERNAL', url: String(url) })
+    );
+  };
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+
+    const anchor = target.closest('a');
+    if (!anchor || !anchor.href) return;
+
+    const targetAttr = (anchor.getAttribute('target') || '').toLowerCase();
+    const relAttr = (anchor.getAttribute('rel') || '').toLowerCase();
+    const isPopup = targetAttr === '_blank' || relAttr.includes('external');
+
+    if (!isPopup) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    postExternal(anchor.href);
+  }, true);
+
+  true;
+})();`;
+
 function buildInjectedSessionScript(
   session:
     | {
@@ -157,20 +199,32 @@ function buildInjectedSessionScript(
 
 export default function GenericWebViewScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { displayBaseUrl } = useAppConfig();
   const { session, saveToken } = useAuthSession();
-  const { url, captureAuth } = useLocalSearchParams<{
+  const { url, captureAuth, closeOnExit } = useLocalSearchParams<{
     url?: string | string[];
     captureAuth?: string | string[];
+    closeOnExit?: string | string[];
   }>();
 
   const [capturedSource, setCapturedSource] = useState<string>('');
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
+  const [currentUrl, setCurrentUrl] = useState('');
   const lastExternalUrlRef = useRef('');
+  const webViewRef = useRef<WebView | null>(null);
+  const commandBarAnim = useRef(new Animated.Value(1)).current;
+  const commandBarVisibleRef = useRef(true);
+  const lastScrollYRef = useRef(0);
 
   const targetUrl = normalizeParam(url).trim();
   const captureParam = normalizeParam(captureAuth).trim();
+  const closeOnExitParam = normalizeParam(closeOnExit).trim();
   const shouldCaptureAuth = captureParam !== '0';
+  const shouldCloseOnExit = closeOnExitParam === '1';
   const baseHost = useMemo(() => getHost(displayBaseUrl), [displayBaseUrl]);
+  const initialPath = useMemo(() => getPath(targetUrl), [targetUrl]);
 
   const allowCapture = useMemo(() => {
     return isAllowedWebUrl(targetUrl, baseHost);
@@ -199,10 +253,82 @@ export default function GenericWebViewScreen() {
     }
   }, []);
 
+  const openCurrentInBrowser = useCallback(() => {
+    void openExternalUrl(currentUrl || targetUrl);
+  }, [currentUrl, openExternalUrl, targetUrl]);
+
+  const shouldCloseEmbeddedWebView = useCallback(
+    (nextUrl: string) => {
+      if (!shouldCloseOnExit) return false;
+      if (!isAllowedWebUrl(nextUrl, baseHost)) return false;
+
+      const nextPath = getPath(nextUrl);
+      if (!nextPath || !initialPath) return false;
+      if (nextPath === initialPath) return false;
+
+      return true;
+    },
+    [baseHost, initialPath, shouldCloseOnExit]
+  );
+
+  const pulseTap = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
+  const copyCurrentUrl = useCallback(async () => {
+    const urlToCopy = (currentUrl || targetUrl).trim();
+    if (!urlToCopy) return;
+
+    try {
+      await Clipboard.setStringAsync(urlToCopy);
+      pulseTap();
+      Alert.alert('Copied', 'URL copied to clipboard.');
+    } catch {
+      Alert.alert('Could not copy', 'Try opening in browser instead.');
+    }
+  }, [currentUrl, pulseTap, targetUrl]);
+
+  const setCommandBarVisible = useCallback(
+    (visible: boolean) => {
+      if (commandBarVisibleRef.current === visible) return;
+      commandBarVisibleRef.current = visible;
+      Animated.timing(commandBarAnim, {
+        toValue: visible ? 1 : 0,
+        duration: 180,
+        useNativeDriver: false,
+      }).start();
+    },
+    [commandBarAnim]
+  );
+
+  const goToTienda = useCallback(() => {
+    router.replace({ pathname: '/web', params: { url: 'https://markket.place/tienda?display=embed', captureAuth: shouldCaptureAuth ? '1' : '0' } } as never);
+  }, [router, shouldCaptureAuth]);
+
+  const handleOpenWindow = useCallback(
+    (event: { nativeEvent?: { targetUrl?: string } }) => {
+      const popupUrl = (event.nativeEvent?.targetUrl || '').trim();
+      if (!popupUrl) return;
+
+      if (!isAllowedWebUrl(popupUrl, baseHost)) {
+        void openExternalUrl(popupUrl);
+        return;
+      }
+
+      router.replace({ pathname: '/web', params: { url: popupUrl, captureAuth: shouldCaptureAuth ? '1' : '0' } } as never);
+    },
+    [baseHost, openExternalUrl, router, shouldCaptureAuth]
+  );
+
   const handleNavigationAttempt = useCallback(
     (request: { url?: string }) => {
       const currentUrl = (request?.url || '').trim();
       if (!currentUrl) return true;
+
+      if (shouldCloseEmbeddedWebView(currentUrl)) {
+        router.back();
+        return false;
+      }
 
       if (shouldCaptureAuth && allowCapture) {
         const found = readTokenFromUrl(currentUrl);
@@ -227,18 +353,22 @@ export default function GenericWebViewScreen() {
 
       return true;
     },
-    [allowCapture, baseHost, openExternalUrl, saveFromSource, shouldCaptureAuth]
+    [allowCapture, baseHost, openExternalUrl, router, saveFromSource, shouldCaptureAuth, shouldCloseEmbeddedWebView]
   );
 
   const handleMessage = useCallback(
     (event: { nativeEvent?: { data?: string } }) => {
-      if (!shouldCaptureAuth || !allowCapture) return;
-
       const rawData = event.nativeEvent?.data;
       if (!rawData) return;
 
       try {
-        const payload = JSON.parse(rawData) as { type?: string; token?: string; source?: string };
+        const payload = JSON.parse(rawData) as { type?: string; token?: string; source?: string; url?: string };
+        if (payload.type === 'MARKKET_OPEN_EXTERNAL' && payload.url) {
+          void openExternalUrl(payload.url);
+          return;
+        }
+
+        if (!shouldCaptureAuth || !allowCapture) return;
         if (payload.type !== 'MARKKET_AUTH_TOKEN') return;
         if (!payload.token) return;
 
@@ -247,8 +377,52 @@ export default function GenericWebViewScreen() {
         // Ignore non-JSON messages from websites.
       }
     },
-    [allowCapture, saveFromSource, shouldCaptureAuth]
+    [allowCapture, openExternalUrl, saveFromSource, shouldCaptureAuth]
   );
+
+  const handleNavStateChange = useCallback((state: { canGoBack?: boolean; canGoForward?: boolean; url?: string }) => {
+    const nextUrl = (state.url || '').trim();
+    if (nextUrl && shouldCloseEmbeddedWebView(nextUrl)) {
+      router.back();
+      return;
+    }
+
+    setCanGoBack(Boolean(state.canGoBack));
+    setCanGoForward(Boolean(state.canGoForward));
+    setCurrentUrl(nextUrl);
+  }, [router, shouldCloseEmbeddedWebView]);
+
+  const handleWebScroll = useCallback(
+    (event: { nativeEvent?: { contentOffset?: { y?: number } } }) => {
+      const y = event.nativeEvent?.contentOffset?.y ?? 0;
+      const delta = y - lastScrollYRef.current;
+      lastScrollYRef.current = y;
+
+      if (y <= 8) {
+        setCommandBarVisible(true);
+        return;
+      }
+
+      if (delta > 8) {
+        setCommandBarVisible(false);
+      } else if (delta < -8) {
+        setCommandBarVisible(true);
+      }
+    },
+    [setCommandBarVisible]
+  );
+
+  const combinedInjectedScript = useMemo(() => {
+    const scripts = [];
+    if (shouldCaptureAuth && allowCapture) {
+      scripts.push(injectedCaptureScript);
+    }
+    scripts.push(injectedLinkInterceptorScript);
+    return scripts.join('\n');
+  }, [allowCapture, shouldCaptureAuth]);
+
+  const commandBarBottomPadding = Math.max(insets.bottom, 8);
+  const commandBarHeight = 74 + commandBarBottomPadding;
 
   if (!targetUrl) {
     return (
@@ -266,18 +440,8 @@ export default function GenericWebViewScreen() {
     <View style={styles.container}>
       <View style={styles.urlBar}>
         <ThemedText numberOfLines={1} style={styles.urlText}>
-          {targetUrl}
+          {currentUrl || targetUrl}
         </ThemedText>
-      </View>
-      <View style={styles.sessionBar}>
-        <ThemedText style={styles.sessionText} numberOfLines={1}>
-          {session?.token
-            ? 'Authenticated in app. This page should open with your session.'
-            : 'Not signed in yet. Log in on this page to sync app session.'}
-        </ThemedText>
-        <Pressable style={styles.profileButton} onPress={() => router.push('/profile' as never)}>
-          <ThemedText style={styles.profileButtonText}>Profile</ThemedText>
-        </Pressable>
       </View>
       {capturedSource ? (
         <View style={styles.captureHint}>
@@ -285,19 +449,83 @@ export default function GenericWebViewScreen() {
         </View>
       ) : null}
       <WebView
+        ref={webViewRef}
         source={{ uri: targetUrl }}
         startInLoadingState
         onMessage={handleMessage}
+        onScroll={handleWebScroll}
+        onNavigationStateChange={handleNavStateChange}
         onShouldStartLoadWithRequest={handleNavigationAttempt}
+        onOpenWindow={handleOpenWindow}
         injectedJavaScriptBeforeContentLoaded={allowCapture ? injectedSessionScript : undefined}
-        injectedJavaScript={shouldCaptureAuth && allowCapture ? injectedCaptureScript : undefined}
+        injectedJavaScript={combinedInjectedScript}
         sharedCookiesEnabled
+        setSupportMultipleWindows
         renderLoading={() => (
           <View style={styles.loadingState}>
             <ActivityIndicator size="large" />
           </View>
         )}
       />
+      <Animated.View
+        style={[
+          styles.commandBarShell,
+          {
+            paddingBottom: commandBarBottomPadding,
+            height: commandBarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, commandBarHeight] }),
+            opacity: commandBarAnim,
+          },
+        ]}>
+        <View style={styles.commandBar}>
+          <View style={styles.navCluster}>
+            <Pressable
+              style={[styles.navButton, !canGoBack && styles.navButtonDisabled]}
+              disabled={!canGoBack}
+              onPress={() => {
+                pulseTap();
+                webViewRef.current?.goBack();
+              }}>
+              <ThemedText style={[styles.navButtonText, !canGoBack && styles.commandButtonTextDisabled]}>{'<'}</ThemedText>
+            </Pressable>
+            <Pressable
+              style={[styles.navButton, !canGoForward && styles.navButtonDisabled]}
+              disabled={!canGoForward}
+              onPress={() => {
+                pulseTap();
+                webViewRef.current?.goForward();
+              }}>
+              <ThemedText style={[styles.navButtonText, !canGoForward && styles.commandButtonTextDisabled]}>{'>'}</ThemedText>
+            </Pressable>
+          </View>
+
+          <View style={styles.actionCluster}>
+            <Pressable style={styles.commandChip} onPress={() => {
+              pulseTap();
+              goToTienda();
+            }}>
+              <ThemedText style={styles.commandChipText}>Store</ThemedText>
+            </Pressable>
+            <Pressable style={styles.commandChip} onPress={() => {
+              pulseTap();
+              void copyCurrentUrl();
+            }}>
+              <ThemedText style={styles.commandChipText}>Copy</ThemedText>
+            </Pressable>
+            <Pressable style={styles.commandChip} onPress={() => {
+              pulseTap();
+              openCurrentInBrowser();
+            }}>
+              <ThemedText style={styles.commandChipText}>Open</ThemedText>
+            </Pressable>
+            <Pressable style={styles.commandChip} onPress={() => {
+              pulseTap();
+              router.push('/profile' as never);
+            }}>
+              <ThemedText style={styles.commandChipText}>Me</ThemedText>
+            </Pressable>
+          </View>
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -316,31 +544,6 @@ const styles = StyleSheet.create({
   urlText: {
     fontSize: 12,
     opacity: 0.8,
-  },
-  sessionBar: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(120,120,120,0.45)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  sessionText: {
-    flex: 1,
-    fontSize: 11,
-    opacity: 0.8,
-  },
-  profileButton: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(120,120,120,0.45)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  profileButtonText: {
-    fontSize: 11,
-    fontWeight: '700',
   },
   captureHint: {
     backgroundColor: 'rgba(9,123,57,0.14)',
@@ -367,6 +570,81 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 20,
     gap: 10,
+  },
+  commandBar: {
+    height: 66,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(252,253,255,0.96)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    flexWrap: 'nowrap',
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(148,163,184,0.5)',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  commandBarShell: {
+    overflow: 'hidden',
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(248,250,252,0.88)',
+  },
+  navCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionCluster: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  navButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.32)',
+    backgroundColor: 'rgba(236,253,245,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navButtonDisabled: {
+    borderColor: 'rgba(120,120,120,0.22)',
+    backgroundColor: 'rgba(241,245,249,0.92)',
+  },
+  navButtonText: {
+    fontSize: 16,
+    lineHeight: 18,
+    fontWeight: '800',
+    color: '#0E7490',
+  },
+  commandChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.24)',
+    backgroundColor: 'rgba(240,249,255,0.92)',
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    minWidth: 52,
+    alignItems: 'center',
+  },
+  commandChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#0E7490',
+    letterSpacing: 0.2,
+  },
+  commandButtonTextDisabled: {
+    color: 'rgba(100,116,139,0.75)',
   },
   centerHint: {
     textAlign: 'center',

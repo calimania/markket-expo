@@ -6,16 +6,43 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "NODE_ENV": "development",
+        "EXPO_PUBLIC_POSTHOG_API_HOST": "https://p.markket.place",
+        "EXPO_PUBLIC_POSTHOG_UI_HOST": "https://us.posthog.com"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_POSTHOG_API_HOST": "https://p.markket.place",
+        "EXPO_PUBLIC_POSTHOG_UI_HOST": "https://us.posthog.com"
+      }
+    },
+    "testflight": {
+      "channel": "testflight",
+      "env": {
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_POSTHOG_API_HOST": "https://p.markket.place",
+        "EXPO_PUBLIC_POSTHOG_UI_HOST": "https://us.posthog.com"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "channel": "production",
+      "env": {
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_POSTHOG_API_HOST": "https://p.markket.place",
+        "EXPO_PUBLIC_POSTHOG_UI_HOST": "https://us.posthog.com"
+      }
     }
   },
   "submit": {
+    "testflight": {},
     "production": {}
   }
 }
