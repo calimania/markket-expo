@@ -109,10 +109,12 @@ export default function StoresScreen() {
         return;
       }
 
-      const storeEditorUrl = `${displayBaseUrl}tienda/${storeSlug}/store?display=embed`;
-      router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0', closeOnExit: '1' } } as never);
+      router.push({
+        pathname: '/store/[storeSlug]/settings',
+        params: { storeSlug },
+      } as never);
     },
-    [displayBaseUrl, router]
+    [router]
   );
 
   const openCreateStore = useCallback(() => {
@@ -252,7 +254,7 @@ export default function StoresScreen() {
         page += 1;
       }
 
-      setStores(allStores.filter((store) => store.active !== false));
+      setStores(allStores);
     } catch {
       setStores([]);
     } finally {
@@ -303,9 +305,6 @@ export default function StoresScreen() {
 
         <ThemedText style={styles.subtitle}>{subtitle}</ThemedText>
         {canCreateStore ? <Button label="Create New Store" variant="secondary" onPress={openCreateStore} /> : null}
-        {!loadingStores && !canCreateStore ? (
-          <ThemedText style={styles.subtitle}>This account already has 2 stores. We can make the cap dynamic later.</ThemedText>
-        ) : null}
 
         {loadingStores ? (
           <View style={styles.centerState}>

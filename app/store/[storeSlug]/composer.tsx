@@ -1,11 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePreventRemove } from '@react-navigation/native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import * as FileSystem from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image as RNImage, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Image as RNImage, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, {
   Easing,
   FadeIn,
@@ -19,6 +20,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg';
+import { captureRef as captureViewRef } from 'react-native-view-shot';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -26,8 +29,8 @@ import { Input } from '@/components/ui/input';
 
 type ComposerMode = 'from-scratch' | 'from-photo' | 'edit-existing';
 type MediaSlot = 'cover' | 'seoSocial' | 'logo' | 'slides';
-type PresetKey = 'story' | 'feed' | 'link' | 'cover';
-type ToolPanel = 'none' | 'format' | 'look' | 'text' | 'frame';
+type PresetKey = 'story' | 'feed' | 'link' | 'cover' | 'favicon';
+type ToolPanel = 'none' | 'format' | 'look' | 'text' | 'frame' | 'details';
 type TextStyleKey = 'impact' | 'elegant' | 'mono';
 
 type Preset = {
@@ -38,10 +41,10 @@ type Preset = {
 };
 
 const PRESETS: Preset[] = [
-  { key: 'story', label: 'Story 1080x1920', width: 1080, height: 1920 },
-  { key: 'feed', label: 'Feed 1080x1350', width: 1080, height: 1350 },
-  { key: 'link', label: 'Link 1200x630', width: 1200, height: 630 },
+  { key: 'story', label: 'Story 1200x2133', width: 1200, height: 2133 },
+  { key: 'feed', label: 'Feed 1440x1800', width: 1440, height: 1800 },
   { key: 'cover', label: 'Cover 1600x900', width: 1600, height: 900 },
+  { key: 'favicon', label: 'Square 320x320', width: 320, height: 320 },
 ];
 
 const COLOR_SWATCHES = ['#0EA5E9', '#F59E0B', '#D946EF', '#10B981', '#0F172A', '#E2E8F0'];
@@ -51,10 +54,10 @@ const QUICK_HEADLINES = ['New arrivals', 'Just dropped', 'Fresh favorites', 'Sho
 const QUICK_SUBTITLES = ['Now live in the storefront', 'Tap through to explore more', 'Styled for social sharing', 'Built to catch attention fast'];
 
 const QUICK_LOOKS = [
-  { label: 'Sky', bgA: '#0EA5E9', bgB: '#0F172A' },
-  { label: 'Sunset', bgA: '#F59E0B', bgB: '#7C2D12' },
-  { label: 'Neon', bgA: '#D946EF', bgB: '#1E1B4B' },
-  { label: 'Fresh', bgA: '#10B981', bgB: '#134E4A' },
+  { label: 'Cotton Candy', bgA: '#FBCFE8', bgB: '#BFDBFE' },
+  { label: 'Peach Tea', bgA: '#FED7AA', bgB: '#FDE68A' },
+  { label: 'Mint Cloud', bgA: '#A7F3D0', bgB: '#BAE6FD' },
+  { label: 'Lavender Pop', bgA: '#DDD6FE', bgB: '#FBCFE8' },
 ];
 
 const TEXT_STYLES: { key: TextStyleKey; label: string; fontFamily: string; titleScale: number; subtitleScale: number }[] = [
@@ -68,7 +71,13 @@ const IMAGE_COMPOSITION_ENABLED = true;
 const COMPOSER_MAX_SOURCE_DIMENSION = 1800;
 const COMPOSER_MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const COMPOSER_SOURCE_COMPRESS = 0.8;
-const DEFAULT_TEXT_CLARITY_WASH_OPACITY = 0.32;
+const DEFAULT_TEXT_CLARITY_WASH_OPACITY = 0.08;
+const COMPOSER_EXPORT_SETTINGS: Record<MediaSlot, { compress: number; fallbackCompress: number; maxBytes: number }> = {
+  cover: { compress: 0.8, fallbackCompress: 0.68, maxBytes: Math.round(1.6 * 1024 * 1024) },
+  seoSocial: { compress: 0.78, fallbackCompress: 0.64, maxBytes: Math.round(1.15 * 1024 * 1024) },
+  logo: { compress: 0.86, fallbackCompress: 0.74, maxBytes: Math.round(0.9 * 1024 * 1024) },
+  slides: { compress: 0.8, fallbackCompress: 0.68, maxBytes: Math.round(1.6 * 1024 * 1024) },
+};
 
 type SourceAssetMeta = {
   width?: number;
@@ -91,6 +100,15 @@ function normalizeParam(value: string | string[] | undefined): string {
 
 function cleanText(value: string | string[] | undefined): string {
   return normalizeParam(value).trim();
+}
+
+function getSourceBaseName(uri: string): string {
+  const cleanUri = cleanText(uri);
+  if (!cleanUri) return '';
+  const withoutQuery = cleanUri.split('?')[0] || '';
+  const fileName = withoutQuery.split('/').pop() || '';
+  const withoutExtension = fileName.replace(/\.[^.]+$/, '');
+  return withoutExtension.replace(/[-_]+/g, ' ').trim();
 }
 
 function parseMode(value: string): ComposerMode {
@@ -120,7 +138,7 @@ function getFrameDefaultsForSlot(slot: MediaSlot): FrameDefaults {
     return { presetKey: 'feed', photoScale: 1.1, photoOffsetY: -0.02 };
   }
 
-  return { presetKey: 'feed', photoScale: 1, photoOffsetY: 0 };
+  return { presetKey: 'favicon', photoScale: 1, photoOffsetY: 0 };
 }
 
 function normalizeHexColor(value: string): string {
@@ -226,119 +244,13 @@ function buildAutoLooks(seed: string): { label: string; bgA: string; bgB: string
   ];
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function buildComposerSvgDataUri(options: {
-  width: number;
-  height: number;
-  mode: ComposerMode;
-  sourceUri?: string;
-  includeSource?: boolean;
-  applyTextClarityWash?: boolean;
-  textClarityWashOpacity?: number;
-  showTextOverlay: boolean;
-  photoScale: number;
-  photoOffsetY: number;
-  bgA: string;
-  bgB: string;
-  title: string;
-  subtitle: string;
-  textOffsetX: number;
-  textOffsetY: number;
-  textStyleKey: TextStyleKey;
-}): string {
-  const {
-    width,
-    height,
-    mode,
-    sourceUri,
-    includeSource = true,
-    applyTextClarityWash = true,
-    textClarityWashOpacity = DEFAULT_TEXT_CLARITY_WASH_OPACITY,
-    showTextOverlay,
-    photoScale,
-    photoOffsetY,
-    bgA,
-    bgB,
-    title,
-    subtitle,
-    textOffsetX,
-    textOffsetY,
-    textStyleKey,
-  } = options;
-
-  const cleanTitle = title.trim();
-  const cleanSubtitle = subtitle.trim();
-  const escapedTitle = escapeXml(cleanTitle);
-  const escapedSubtitle = escapeXml(cleanSubtitle);
-  const hasPhoto = includeSource && (mode === 'from-photo' || mode === 'edit-existing') && sourceUri;
-  const hasOverlayText = showTextOverlay && Boolean(cleanTitle || cleanSubtitle);
-  const clampedScale = clamp(photoScale, 1, 2.4);
-  const clampedOffsetY = clamp(photoOffsetY, -1, 1);
-  const clampedWashOpacity = clamp(textClarityWashOpacity, 0, 0.75);
-  const baseImageX = 0;
-  const baseImageY = 0;
-  const baseImageWidth = width;
-  const baseImageHeight = height;
-  const scaledImageWidth = baseImageWidth * clampedScale;
-  const scaledImageHeight = baseImageHeight * clampedScale;
-  const framedImageX = Math.round(baseImageX - (scaledImageWidth - baseImageWidth) / 2);
-  const framedImageY = Math.round(baseImageY - (scaledImageHeight - baseImageHeight) / 2 + clampedOffsetY * height * 0.2);
-  const textStyle = TEXT_STYLES.find((entry) => entry.key === textStyleKey) || TEXT_STYLES[0];
-  const clampedTextOffsetX = clamp(textOffsetX, -1, 1);
-  const clampedTextOffsetY = clamp(textOffsetY, -1, 1);
-  const overlayX = Math.round(width * (0.07 + clampedTextOffsetX * 0.18));
-  const overlayY = Math.round(height * (0.68 + clampedTextOffsetY * 0.2));
-  const overlayWidth = Math.round(width * 0.86);
-  const overlayHeight = Math.round(height * 0.24);
-  const titleX = Math.round(overlayX + width * 0.04);
-  const titleY = Math.round(overlayY + height * 0.09);
-  const subtitleX = titleX;
-  const subtitleY = Math.round(overlayY + height * 0.17);
-  const titleSize = Math.max(20, Math.round(width * 0.06 * textStyle.titleScale));
-  const subtitleSize = Math.max(14, Math.round(width * 0.036 * textStyle.subtitleScale));
-  const imageOverlayOpacity = hasPhoto && applyTextClarityWash ? clampedWashOpacity : 0;
-  const imageOverlayGlowOpacity = hasPhoto && applyTextClarityWash ? Math.min(0.35, clampedWashOpacity * 0.65) : 0;
-
-  const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="${bgA}" />
-      <stop offset="100%" stop-color="${bgB}" />
-    </linearGradient>
-    <linearGradient id="imageWash" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="${bgA}" stop-opacity="${imageOverlayOpacity}" />
-      <stop offset="100%" stop-color="${bgB}" stop-opacity="${imageOverlayOpacity}" />
-    </linearGradient>
-    <radialGradient id="imageGlow" cx="22%" cy="18%" r="85%">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="${imageOverlayGlowOpacity}" />
-      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
-    </radialGradient>
-  </defs>
-  <rect x="0" y="0" width="${width}" height="${height}" fill="url(#bg)" />
-  ${hasPhoto ? `<image href="${escapeXml(sourceUri)}" x="${framedImageX}" y="${framedImageY}" width="${Math.round(scaledImageWidth)}" height="${Math.round(scaledImageHeight)}" preserveAspectRatio="xMidYMid slice" />` : ''}
-  ${hasPhoto ? `<rect x="${Math.round(baseImageX)}" y="${Math.round(baseImageY)}" width="${Math.round(baseImageWidth)}" height="${Math.round(baseImageHeight)}" fill="url(#imageWash)" />` : ''}
-  ${hasPhoto ? `<rect x="${Math.round(baseImageX)}" y="${Math.round(baseImageY)}" width="${Math.round(baseImageWidth)}" height="${Math.round(baseImageHeight)}" fill="url(#imageGlow)" />` : ''}
-  ${hasOverlayText ? `<rect x="${overlayX}" y="${overlayY}" rx="${Math.round(width * 0.025)}" ry="${Math.round(width * 0.025)}" width="${overlayWidth}" height="${overlayHeight}" fill="rgba(15,23,42,0.52)" />` : ''}
-  ${hasOverlayText && cleanTitle ? `<text x="${titleX}" y="${titleY}" fill="#F8FAFC" font-family="${textStyle.fontFamily}" font-size="${titleSize}" font-weight="700">${escapedTitle}</text>` : ''}
-  ${hasOverlayText && cleanSubtitle ? `<text x="${subtitleX}" y="${subtitleY}" fill="#E2E8F0" font-family="${textStyle.fontFamily}" font-size="${subtitleSize}">${escapedSubtitle}</text>` : ''}
-</svg>`;
-
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
 export default function StoreComposerScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const titleInputRef = useRef<TextInput | null>(null);
+  const subtitleInputRef = useRef<TextInput | null>(null);
+  const compositionRef = useRef<View>(null);
   const { storeSlug, slot, mode, sourceUri, sourceKey, colorSeed, titleSeed, subtitleSeed, altSeed } = useLocalSearchParams<{
     storeSlug?: string | string[];
     slot?: string | string[];
@@ -357,19 +269,15 @@ export default function StoreComposerScreen() {
   const resolvedSourceUri = cleanText(sourceUri);
   const resolvedSourceKey = cleanText(sourceKey);
   const resolvedColorSeed = normalizeHexColor(cleanText(colorSeed));
+
   const frameDefaults = useMemo(() => getFrameDefaultsForSlot(resolvedSlot), [resolvedSlot]);
-  const defaultTitle = cleanText(titleSeed) || '';
-  const defaultSubtitle = cleanText(subtitleSeed);
-  const defaultAltText = cleanText(altSeed);
-  const defaultShowTextOverlay = true;
   const [sourceImageUri, setSourceImageUri] = useState(resolvedSourceUri);
   const [sourceMeta, setSourceMeta] = useState<SourceAssetMeta | null>(null);
   const [sourceNormalizationWarning, setSourceNormalizationWarning] = useState('');
+
   const hasSourceImage = Boolean(sourceImageUri);
-  const canUseImageComposition =
-    IMAGE_COMPOSITION_ENABLED &&
-    hasSourceImage &&
-    (resolvedMode === 'from-photo' || resolvedMode === 'edit-existing');
+  const canUseImageComposition = IMAGE_COMPOSITION_ENABLED && hasSourceImage && (resolvedMode === 'from-photo' || resolvedMode === 'edit-existing');
+
   const titlePlaceholder = resolvedStoreSlug ? `${resolvedStoreSlug.replace(/[-_]+/g, ' ')} spotlight` : 'Highlight what matters most';
   const subtitlePlaceholder = 'Short supporting line for storefront or social';
   const modeLabel =
@@ -381,14 +289,20 @@ export default function StoreComposerScreen() {
 
   const autoLooks = useMemo(() => buildAutoLooks(resolvedColorSeed), [resolvedColorSeed]);
   const seededLook = autoLooks[0] || null;
+  const defaultTitle = cleanText(titleSeed) || titlePlaceholder;
+  const defaultSubtitle = cleanText(subtitleSeed) || subtitlePlaceholder;
+  const defaultAltText = cleanText(altSeed);
+  const defaultShowTextOverlay = resolvedSlot === 'seoSocial' || resolvedSlot === 'slides';
 
   const [presetKey, setPresetKey] = useState<PresetKey>(frameDefaults.presetKey);
-  const [bgA, setBgA] = useState(seededLook?.bgA || '#0EA5E9');
-  const [bgB, setBgB] = useState(seededLook?.bgB || '#0F172A');
+  const [bgA, setBgA] = useState(seededLook?.bgA || '#FBCFE8');
+  const [bgB, setBgB] = useState(seededLook?.bgB || '#BFDBFE');
   const [title, setTitle] = useState(defaultTitle);
   const [subtitle, setSubtitle] = useState(defaultSubtitle);
   const [altText, setAltText] = useState(defaultAltText);
   const [showTextOverlay, setShowTextOverlay] = useState(defaultShowTextOverlay);
+  const [showTitle, setShowTitle] = useState(true);
+  const [showSubtitle, setShowSubtitle] = useState(true);
   const [activePanel, setActivePanel] = useState<ToolPanel>('none');
   const [textStyleKey, setTextStyleKey] = useState<TextStyleKey>('impact');
   const [textOffsetX, setTextOffsetX] = useState(0);
@@ -568,94 +482,26 @@ export default function StoreComposerScreen() {
   }, [haloPulse, scanProgress]);
 
   const selectedPreset = useMemo(() => PRESETS.find((preset) => preset.key === presetKey) || PRESETS[1], [presetKey]);
-  const exportPreviewUri = useMemo(
-    () =>
-      buildComposerSvgDataUri({
-        width: selectedPreset.width,
-        height: selectedPreset.height,
-        mode: resolvedMode,
-        sourceUri: sourceImageUri,
-        includeSource: IMAGE_COMPOSITION_ENABLED,
-        applyTextClarityWash,
-        textClarityWashOpacity,
-        showTextOverlay,
-        photoScale,
-        photoOffsetY,
-        bgA,
-        bgB,
-        title,
-        subtitle,
-        textOffsetX,
-        textOffsetY,
-        textStyleKey,
-      }),
-    [
-      bgA,
-      bgB,
-      applyTextClarityWash,
-      textClarityWashOpacity,
-      photoOffsetY,
-      photoScale,
-      resolvedMode,
-      selectedPreset.height,
-      selectedPreset.width,
-      showTextOverlay,
-      sourceImageUri,
-      subtitle,
-      textOffsetX,
-      textOffsetY,
-      textStyleKey,
-      title,
-    ]
-  );
+  const textOverlayPlacement = useMemo(() => {
+    if (selectedPreset.width >= selectedPreset.height) {
+      return { bottom: '11%' as const };
+    }
 
-  const canvasOverlayUri = useMemo(
-    () =>
-      buildComposerSvgDataUri({
-        width: selectedPreset.width,
-        height: selectedPreset.height,
-        mode: resolvedMode,
-        sourceUri: sourceImageUri,
-        includeSource: false,
-        applyTextClarityWash,
-        textClarityWashOpacity,
-        showTextOverlay,
-        photoScale,
-        photoOffsetY,
-        bgA,
-        bgB,
-        title,
-        subtitle,
-        textOffsetX,
-        textOffsetY,
-        textStyleKey,
-      }),
-    [
-      bgA,
-      bgB,
-      applyTextClarityWash,
-      textClarityWashOpacity,
-      photoOffsetY,
-      photoScale,
-      resolvedMode,
-      selectedPreset.height,
-      selectedPreset.width,
-      showTextOverlay,
-      sourceImageUri,
-      subtitle,
-      textOffsetX,
-      textOffsetY,
-      textStyleKey,
-      title,
-    ]
-  );
+    if (selectedPreset.width === selectedPreset.height) {
+      return { bottom: '13%' as const };
+    }
+
+    return { bottom: '15%' as const };
+  }, [selectedPreset.height, selectedPreset.width]);
 
   const hasUnsavedChanges = useMemo(() => {
     return (
-      presetKey !== 'feed' ||
-      bgA !== (seededLook?.bgA || '#0EA5E9') ||
-      bgB !== (seededLook?.bgB || '#0F172A') ||
+      presetKey !== frameDefaults.presetKey ||
+      bgA !== (seededLook?.bgA || '#FBCFE8') ||
+      bgB !== (seededLook?.bgB || '#BFDBFE') ||
       showTextOverlay !== defaultShowTextOverlay ||
+      showTitle !== true ||
+      showSubtitle !== true ||
       textStyleKey !== 'impact' ||
       textOffsetX !== 0 ||
       textOffsetY !== 0 ||
@@ -680,10 +526,13 @@ export default function StoreComposerScreen() {
     hasSourceImage,
     frameDefaults.photoOffsetY,
     frameDefaults.photoScale,
+    frameDefaults.presetKey,
     photoOffsetY,
     photoScale,
     presetKey,
     showTextOverlay,
+    showTitle,
+    showSubtitle,
     subtitle,
     textOffsetX,
     textOffsetY,
@@ -716,36 +565,80 @@ export default function StoreComposerScreen() {
   });
 
   const applyToMediaStudio = useCallback(async () => {
+    if (!compositionRef.current) {
+      Alert.alert('Could not apply', 'Canvas not ready. Try again in a moment.');
+      return;
+    }
     const key = `markket-media-composer-draft:${Date.now()}`;
-    const payload = {
-      key: `composer-${Date.now()}`,
-      uri: exportPreviewUri,
-      width: selectedPreset.width,
-      height: selectedPreset.height,
-      fileName: `composer-${selectedPreset.key}.svg`,
-      mime: 'image/svg+xml',
-      altText: altText.trim() || `${title} ${subtitle}`.trim(),
-      sourceLabel: 'composer',
-      colorSeed: normalizeHexColor(bgA),
-    };
-
+    const derivedAltText = altText.trim() || `${title} ${subtitle}`.trim() || getSourceBaseName(sourceImageUri) || 'composer image';
+    const exportSettings = COMPOSER_EXPORT_SETTINGS[resolvedSlot];
     try {
+      const pngUri = await captureViewRef(compositionRef, {
+        format: 'png',
+        quality: 1,
+        width: selectedPreset.width,
+        height: selectedPreset.height,
+      });
+
+      let compressed = await ImageManipulator.manipulateAsync(
+        pngUri,
+        [{ resize: { width: selectedPreset.width, height: selectedPreset.height } }],
+        {
+          compress: exportSettings.compress,
+          format: ImageManipulator.SaveFormat.JPEG,
+        }
+      );
+
+      const compressedInfo = new FileSystem.File(compressed.uri).info();
+      const compressedSize = typeof compressedInfo.size === 'number' ? compressedInfo.size : undefined;
+
+      if (typeof compressedSize === 'number' && compressedSize > exportSettings.maxBytes) {
+        compressed = await ImageManipulator.manipulateAsync(
+          compressed.uri,
+          [{ resize: { width: selectedPreset.width, height: selectedPreset.height } }],
+          {
+            compress: exportSettings.fallbackCompress,
+            format: ImageManipulator.SaveFormat.JPEG,
+          }
+        );
+      }
+
+      try {
+        const tempPng = new FileSystem.File(pngUri);
+        tempPng.delete();
+      } catch {
+        // Ignore temp cleanup failures.
+      }
+
+      const payload = {
+        key: `composer-${Date.now()}`,
+        uri: compressed.uri,
+        width: selectedPreset.width,
+        height: selectedPreset.height,
+        fileName: `composer-${selectedPreset.key}.jpg`,
+        mime: 'image/jpeg',
+        altText: derivedAltText,
+        sourceLabel: 'composer',
+        colorSeed: normalizeHexColor(bgA),
+      };
       await AsyncStorage.setItem(key, JSON.stringify(payload));
       suppressPreventRemoveRef.current = true;
       router.replace({
         pathname: '/store/[storeSlug]/media',
         params: { storeSlug: resolvedStoreSlug, draftKey: key, draftSlot: resolvedSlot },
       } as never);
-    } catch {
-      Alert.alert('Could not apply', 'Try again in a moment.');
+    } catch (err) {
+      Alert.alert('Could not apply', err instanceof Error ? err.message : 'Try again in a moment.');
     }
-  }, [altText, bgA, exportPreviewUri, resolvedSlot, resolvedStoreSlug, router, selectedPreset.key, selectedPreset.height, selectedPreset.width, subtitle, title]);
+  }, [altText, bgA, compositionRef, resolvedSlot, resolvedStoreSlug, router, selectedPreset.key, selectedPreset.height, selectedPreset.width, sourceImageUri, subtitle, title]);
 
   const resetDraft = useCallback(() => {
     setPresetKey(frameDefaults.presetKey);
-    setBgA(seededLook?.bgA || '#0EA5E9');
-    setBgB(seededLook?.bgB || '#0F172A');
+    setBgA(seededLook?.bgA || '#FBCFE8');
+    setBgB(seededLook?.bgB || '#BFDBFE');
     setShowTextOverlay(defaultShowTextOverlay);
+    setShowTitle(true);
+    setShowSubtitle(true);
     setTitle(defaultTitle);
     setSubtitle(defaultSubtitle);
     setAltText(defaultAltText);
@@ -774,6 +667,14 @@ export default function StoreComposerScreen() {
     setActivePanel((prev) => (prev === panel ? 'none' : panel));
   }, []);
 
+  const supportsText = resolvedSlot === 'seoSocial' || resolvedSlot === 'slides';
+
+  const canvasHint = supportsText && showTextOverlay
+    ? 'Hold + drag to move the text block.'
+    : supportsText
+      ? 'Text is off. Use the Text panel to toggle it on.'
+      : '';
+
   return (
     <ThemedView style={styles.flex}>
       <View style={[styles.screenShell, { paddingTop: 24 }]}>
@@ -784,6 +685,23 @@ export default function StoreComposerScreen() {
           keyboardDismissMode="on-drag"
           alwaysBounceVertical
           showsVerticalScrollIndicator={false}>
+          <View style={styles.topBar}>
+            <View style={styles.headingWrap}>
+              <ThemedText style={styles.title}>Composer</ThemedText>
+              <ThemedText style={styles.subtitle}>Adjust text and image, then apply this PNG draft back to Media Studio.</ThemedText>
+            </View>
+            <View style={styles.headerActionRow}>
+              {hasUnsavedChanges ? (
+                <Pressable style={styles.headerResetButton} onPress={confirmDiscardDraft}>
+                  <ThemedText style={styles.headerResetButtonText}>Reset</ThemedText>
+                </Pressable>
+              ) : null}
+              <Pressable style={styles.headerSaveButton} onPress={() => void applyToMediaStudio()}>
+                <ThemedText style={styles.headerSaveButtonText}>Back to Studio</ThemedText>
+              </Pressable>
+            </View>
+          </View>
+
           <View style={styles.metaRow}>
             <View style={styles.metaPill}>
               <ThemedText style={styles.metaPillText}>{selectedPreset.label}</ThemedText>
@@ -809,29 +727,54 @@ export default function StoreComposerScreen() {
           <Animated.View entering={FadeInDown.duration(260).delay(20)} style={styles.canvasStage}>
             <View style={{ width: '100%', aspectRatio: selectedPreset.width / selectedPreset.height }}>
               <View style={styles.canvasCard} renderToHardwareTextureAndroid shouldRasterizeIOS>
+                {/* ── composition layers (captured as PNG) ── */}
+                <View ref={compositionRef} style={StyleSheet.absoluteFill} collapsable={false}>
+                  {/* gradient background */}
+                  <Svg style={StyleSheet.absoluteFill}>
+                    <Defs>
+                      <SvgLinearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+                        <Stop offset="0" stopColor={bgA} stopOpacity="1" />
+                        <Stop offset="1" stopColor={bgB} stopOpacity="1" />
+                      </SvgLinearGradient>
+                    </Defs>
+                    <Rect x="0" y="0" width="100%" height="100%" fill="url(#bg)" />
+                  </Svg>
+                  {/* source photo */}
+                  {canUseImageComposition ? (
+                    <GestureDetector gesture={frameGesture}>
+                      <Animated.View style={[StyleSheet.absoluteFill, sourceGestureStyle]}>
+                        <Image source={{ uri: sourceImageUri }} style={styles.previewFill} contentFit="cover" />
+                      </Animated.View>
+                    </GestureDetector>
+                  ) : null}
+                  {/* clarity wash */}
+                  {applyTextClarityWash && hasSourceImage && supportsText ? (
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: `rgba(255,255,255,${Math.min(0.55, textClarityWashOpacity * 6)})` }]} pointerEvents="none" />
+                  ) : null}
+                  {/* text overlay */}
+                  {supportsText && showTextOverlay ? (
+                    <GestureDetector gesture={textGesture}>
+                      <Animated.View style={[styles.textOverlayBlock, textOverlayPlacement, textDragStyle]}>
+                        <View style={styles.textOverlayBacking} pointerEvents="none" />
+                        {showTitle && title ? (
+                          <Text style={[styles.composerTitleText, textStyleKey === 'elegant' && styles.composerTitleElegant, textStyleKey === 'mono' && styles.composerTitleMono]}>{title}</Text>
+                        ) : null}
+                        {showSubtitle && subtitle ? (
+                          <Text style={[styles.composerSubtitleText, textStyleKey === 'elegant' && styles.composerSubtitleElegant, textStyleKey === 'mono' && styles.composerSubtitleMono]}>{subtitle}</Text>
+                        ) : null}
+                        <ThemedText style={styles.dragHint}>Hold + drag to reposition</ThemedText>
+                      </Animated.View>
+                    </GestureDetector>
+                  ) : null}
+                </View>
+                {/* ── UI chrome (NOT captured) ── */}
                 <Animated.View pointerEvents="none" style={[styles.canvasHalo, haloStyle]} />
                 <Animated.View pointerEvents="none" style={[styles.canvasScanline, scanlineStyle]} />
-                {canUseImageComposition ? (
-                  <GestureDetector gesture={frameGesture}>
-                    <Animated.View style={[StyleSheet.absoluteFill, sourceGestureStyle]}>
-                      <Image source={{ uri: sourceImageUri }} style={styles.previewFill} contentFit="cover" transition={80} />
-                    </Animated.View>
-                  </GestureDetector>
-                ) : null}
-
-                <Image source={{ uri: canvasOverlayUri }} style={styles.previewFill} contentFit="cover" transition={80} />
-
-                {IMAGE_COMPOSITION_ENABLED ? (
-                  !hasSourceImage && resolvedMode !== 'from-scratch' ? (
-                    <View style={styles.canvasSourceMissingPill}>
-                      <ThemedText style={styles.canvasSourceMissingText}>Source image unavailable, using gradient + text only.</ThemedText>
-                    </View>
-                  ) : null
-                ) : (
+                {!hasSourceImage && resolvedMode !== 'from-scratch' ? (
                   <View style={styles.canvasSourceMissingPill}>
-                    <ThemedText style={styles.canvasSourceMissingText}>Image composition is temporarily paused. TODO: restore with safe image sizing.</ThemedText>
+                    <ThemedText style={styles.canvasSourceMissingText}>Source image unavailable, using gradient + text only.</ThemedText>
                   </View>
-                )}
+                ) : null}
 
                 <View style={styles.previewTopRail}>
                   <View style={styles.previewFormatRow}>
@@ -849,40 +792,11 @@ export default function StoreComposerScreen() {
                   </View>
                 </View>
 
-                {activePanel === 'text' ? (
-                  <GestureDetector gesture={textGesture}>
-                    <Animated.View style={[styles.onCanvasEditor, textDragStyle]}>
-                      <Pressable style={[styles.previewChip, showTextOverlay && styles.previewChipActive]} onPress={() => setShowTextOverlay((prev) => !prev)}>
-                        <ThemedText style={[styles.previewChipText, showTextOverlay && styles.previewChipTextActive]}>
-                          {showTextOverlay ? 'Text On' : 'Text Off'}
-                        </ThemedText>
-                      </Pressable>
-                      <ThemedText style={styles.dragHint}>Hold + drag to move text block</ThemedText>
-                      {showTextOverlay ? (
-                        <>
-                          <TextInput
-                            value={title}
-                            onChangeText={setTitle}
-                            placeholder={titlePlaceholder}
-                            placeholderTextColor="rgba(226,232,240,0.75)"
-                            style={styles.onCanvasTitleInput}
-                          />
-                          <TextInput
-                            value={subtitle}
-                            onChangeText={setSubtitle}
-                            placeholder={subtitlePlaceholder}
-                            placeholderTextColor="rgba(226,232,240,0.7)"
-                            style={styles.onCanvasSubtitleInput}
-                          />
-                        </>
-                      ) : null}
-                    </Animated.View>
-                  </GestureDetector>
+                {supportsText ? (
+                  <View style={styles.previewOverlay}>
+                    <ThemedText style={styles.previewOverlayText}>{canvasHint}</ThemedText>
+                  </View>
                 ) : null}
-
-                <View style={styles.previewOverlay}>
-                  <ThemedText style={styles.previewOverlayText}>Tap the circles to edit live on canvas.</ThemedText>
-                </View>
               </View>
             </View>
           </Animated.View>
@@ -890,18 +804,29 @@ export default function StoreComposerScreen() {
 
         <Animated.View pointerEvents="box-none" entering={FadeIn.duration(260).delay(120)} style={styles.floatingRail} renderToHardwareTextureAndroid shouldRasterizeIOS>
           <Pressable style={[styles.toolFab, activePanel === 'look' && styles.toolFabActive]} onPress={() => togglePanel('look')}>
+            <MaterialIcons name="palette" size={18} color="#ECFEFF" />
             <ThemedText style={styles.toolFabText}>Color</ThemedText>
             {activePanel === 'look' ? <View style={styles.toolFabDot} /> : null}
           </Pressable>
-          <Pressable style={[styles.toolFab, activePanel === 'text' && styles.toolFabActive]} onPress={() => togglePanel('text')}>
-            <ThemedText style={styles.toolFabText}>Text</ThemedText>
-            {activePanel === 'text' ? <View style={styles.toolFabDot} /> : null}
+          {supportsText ? (
+            <Pressable style={[styles.toolFab, activePanel === 'text' && styles.toolFabActive]} onPress={() => togglePanel('text')}>
+              <MaterialIcons name="text-fields" size={18} color="#ECFEFF" />
+              <ThemedText style={styles.toolFabText}>Text</ThemedText>
+              {activePanel === 'text' ? <View style={styles.toolFabDot} /> : null}
+            </Pressable>
+          ) : null}
+          <Pressable style={[styles.toolFab, activePanel === 'details' && styles.toolFabActive]} onPress={() => togglePanel('details')}>
+            <MaterialIcons name="accessibility-new" size={18} color="#ECFEFF" />
+            <ThemedText style={styles.toolFabText}>Alt</ThemedText>
+            {activePanel === 'details' ? <View style={styles.toolFabDot} /> : null}
           </Pressable>
           <Pressable style={[styles.toolFab, activePanel === 'frame' && styles.toolFabActive]} onPress={() => togglePanel('frame')}>
+            <MaterialIcons name="crop" size={18} color="#ECFEFF" />
             <ThemedText style={styles.toolFabText}>Frame</ThemedText>
             {activePanel === 'frame' ? <View style={styles.toolFabDot} /> : null}
           </Pressable>
           <Pressable style={[styles.toolFab, activePanel === 'format' && styles.toolFabActive]} onPress={() => togglePanel('format')}>
+            <MaterialIcons name="aspect-ratio" size={18} color="#ECFEFF" />
             <ThemedText style={styles.toolFabText}>Size</ThemedText>
             {activePanel === 'format' ? <View style={styles.toolFabDot} /> : null}
           </Pressable>
@@ -1014,7 +939,58 @@ export default function StoreComposerScreen() {
 
               {activePanel === 'text' ? (
                 <>
-                  <ThemedText type="defaultSemiBold">Text Tools</ThemedText>
+                  <ThemedText type="defaultSemiBold">Text</ThemedText>
+                  <View style={styles.rowWrap}>
+                    <Pressable
+                      style={[styles.pill, showTextOverlay && styles.pillActive]}
+                      onPress={() => setShowTextOverlay((p) => !p)}>
+                      <ThemedText style={[styles.pillText, showTextOverlay && styles.pillTextActive]}>
+                        {showTextOverlay ? 'Text On' : 'Text Off'}
+                      </ThemedText>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.pill, showTextOverlay && showTitle && styles.pillActive]}
+                      onPress={() => setShowTitle((p) => !p)}>
+                      <ThemedText style={[styles.pillText, showTextOverlay && showTitle && styles.pillTextActive]}>
+                        {showTitle ? 'Title On' : 'Title Off'}
+                      </ThemedText>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.pill, showTextOverlay && showSubtitle && styles.pillActive]}
+                      onPress={() => setShowSubtitle((p) => !p)}>
+                      <ThemedText style={[styles.pillText, showTextOverlay && showSubtitle && styles.pillTextActive]}>
+                        {showSubtitle ? 'Subtitle On' : 'Subtitle Off'}
+                      </ThemedText>
+                    </Pressable>
+                    <Pressable
+                      style={styles.pill}
+                      onPress={() => { setTextOffsetX(0); setTextOffsetY(0); }}>
+                      <ThemedText style={styles.pillText}>Center</ThemedText>
+                    </Pressable>
+                  </View>
+                  {showTextOverlay && showTitle ? (
+                    <TextInput
+                      ref={titleInputRef}
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder={titlePlaceholder}
+                      placeholderTextColor="rgba(226,232,240,0.55)"
+                      returnKeyType="next"
+                      onSubmitEditing={() => subtitleInputRef.current?.focus()}
+                      style={styles.onCanvasTitleInput}
+                    />
+                  ) : null}
+                  {showTextOverlay && showSubtitle ? (
+                    <TextInput
+                      ref={subtitleInputRef}
+                      value={subtitle}
+                      onChangeText={setSubtitle}
+                      placeholder={subtitlePlaceholder}
+                      placeholderTextColor="rgba(226,232,240,0.5)"
+                      returnKeyType="done"
+                      style={styles.onCanvasSubtitleInput}
+                    />
+                  ) : null}
                   <View style={styles.rowWrap}>
                     {TEXT_STYLES.map((textStyle) => {
                       const active = textStyleKey === textStyle.key;
@@ -1025,23 +1001,6 @@ export default function StoreComposerScreen() {
                       );
                     })}
                   </View>
-                  <View style={styles.rowWrap}>
-                    <Pressable
-                      style={styles.pill}
-                      onPress={() => {
-                        setTextOffsetX(0);
-                        setTextOffsetY(0);
-                      }}>
-                      <ThemedText style={styles.pillText}>Center Text Block</ThemedText>
-                    </Pressable>
-                  </View>
-                  <Input
-                    value={altText}
-                    onChangeText={setAltText}
-                    placeholder="Alt text (accessibility)"
-                    autoCapitalize="sentences"
-                    autoCorrect
-                  />
                   <View style={styles.suggestionGroup}>
                     <ThemedText style={styles.suggestionLabel}>Headline ideas</ThemedText>
                     <View style={styles.rowWrap}>
@@ -1062,6 +1021,20 @@ export default function StoreComposerScreen() {
                       ))}
                     </View>
                   </View>
+                </>
+              ) : null}
+
+              {activePanel === 'details' ? (
+                <>
+                  <ThemedText type="defaultSemiBold">Accessibility</ThemedText>
+                  <ThemedText style={styles.info}>Alt text stays separate from headline/subtitle so the editing flow is cleaner.</ThemedText>
+                  <Input
+                    value={altText}
+                    onChangeText={setAltText}
+                    placeholder="Describe the image for accessibility"
+                    autoCapitalize="sentences"
+                    autoCorrect
+                  />
                 </>
               ) : null}
 
@@ -1373,6 +1346,48 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     fontFamily: 'RobotoMono',
   },
+  textOverlayBlock: {
+    position: 'absolute',
+    left: '7%',
+    width: '86%',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 18,
+    overflow: 'hidden',
+    gap: 4,
+  },
+  textOverlayBacking: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.28)',
+  },
+  composerTitleText: {
+    color: '#F8FAFC',
+    fontSize: 28,
+    fontWeight: '800',
+    lineHeight: 32,
+    fontFamily: 'SpaceGrotesk',
+  },
+  composerSubtitleText: {
+    color: '#E2E8F0',
+    fontSize: 16,
+    lineHeight: 21,
+    fontFamily: 'SpaceGrotesk',
+    opacity: 0.98,
+  },
+  composerTitleElegant: {
+    fontFamily: 'Lora',
+    fontWeight: '700',
+  },
+  composerSubtitleElegant: {
+    fontFamily: 'Lora',
+  },
+  composerTitleMono: {
+    fontFamily: 'RobotoMono',
+    fontWeight: '700',
+  },
+  composerSubtitleMono: {
+    fontFamily: 'RobotoMono',
+  },
   onCanvasTitleInput: {
     borderRadius: 10,
     borderWidth: 1,
@@ -1397,31 +1412,33 @@ const styles = StyleSheet.create({
   },
   floatingRail: {
     position: 'absolute',
-    right: 14,
-    top: '34%',
-    gap: 8,
+    left: 14,
+    top: '40%',
+    gap: 6,
   },
   toolFab: {
-    minWidth: 64,
-    borderRadius: 999,
+    width: 48,
+    minHeight: 48,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(125,211,252,0.4)',
     backgroundColor: 'rgba(2,6,23,0.78)',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 7,
     alignItems: 'center',
-    gap: 3,
+    justifyContent: 'center',
+    gap: 2,
   },
   toolFabActive: {
     borderColor: 'rgba(45,212,191,0.95)',
     backgroundColor: 'rgba(13,148,136,0.95)',
   },
   toolFabText: {
-    fontSize: 11,
+    fontSize: 9,
     fontFamily: 'SpaceGrotesk',
     fontWeight: '700',
     color: '#ECFEFF',
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
   },
   toolFabDot: {
     width: 5,
@@ -1473,14 +1490,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 14,
     right: 14,
-    bottom: 18,
+    bottom: 24,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: 'rgba(45,212,191,0.45)',
     backgroundColor: 'rgba(2,6,23,0.95)',
     paddingHorizontal: 14,
-    paddingTop: 10,
-    gap: 10,
+    paddingTop: 12,
+    gap: 12,
     shadowColor: '#14B8A6',
     shadowOpacity: 0.2,
     shadowRadius: 10,

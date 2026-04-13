@@ -7,7 +7,7 @@ import * as MediaLibrary from 'expo-media-library';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, Modal, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { usePreventRemove } from '@react-navigation/native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -141,6 +141,8 @@ type UploadedMediaItem = {
   url?: string;
 };
 
+type RelationMediaId = number | string;
+
 type SlotPolicy = {
   maxBytes: number;
   minWidth: number;
@@ -163,16 +165,6 @@ type UploadTarget = {
 function cleanText(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value.trim();
-}
-
-function decodeSvgDataUri(uri: string): string {
-  const prefix = 'data:image/svg+xml;utf8,';
-  if (!uri.startsWith(prefix)) return '';
-  try {
-    return decodeURIComponent(uri.slice(prefix.length));
-  } catch {
-    return '';
-  }
 }
 
 function mergeDraftIntoSlotMedia(
@@ -339,34 +331,6 @@ function preferJpegStockUrl(rawUrl: string): string {
   }
 }
 
-function validateMediaAgainstSlotPolicy(slot: MediaSlot, media: LocalMedia): string {
-  const policy = SLOT_POLICIES[slot];
-  const label = slotLabel(slot);
-  const mime = cleanText(media.mime || '').toLowerCase();
-  const isVector = mime.includes('svg') || cleanText(media.uri).startsWith('data:image/svg+xml');
-
-  if (typeof media.fileSizeBytes === 'number' && media.fileSizeBytes > policy.maxBytes) {
-    const maxMb = (policy.maxBytes / (1024 * 1024)).toFixed(1);
-    return `${label} image is too large. Keep it under ${maxMb}MB.`;
-  }
-
-  if (isVector) {
-    return '';
-  }
-
-  if (typeof media.width === 'number' && typeof media.height === 'number') {
-    if (media.width < policy.minWidth || media.height < policy.minHeight) {
-      return `${label} image is too small. Use at least ${policy.minWidth}x${policy.minHeight}.`;
-    }
-
-    if (policy.requiresSquare && Math.abs(media.width - media.height) > Math.max(4, Math.round(media.width * 0.04))) {
-      return `${label} should be close to square for best results.`;
-    }
-  }
-
-  return '';
-}
-
 function getUploadTargetForSlot(store: StoreItem, slot: MediaSlot): UploadTarget {
   if (slot === 'seoSocial') {
     const seoRecord = store.SEO || store.seo;
@@ -406,6 +370,87 @@ function uploadFieldLabel(field: string): string {
   if (field === 'Logo') return 'Logo';
   if (field === 'socialImage') return 'SEO Social';
   return 'Slides';
+}
+
+function uploadFieldVariants(field: string): string[] {
+  if (field === 'Slides') return ['Slides', 'slides'];
+  if (field === 'slides') return ['slides', 'Slides'];
+  return [field];
+}
+
+function shouldRetryWithAlternateField(
+  status: number,
+  failureText: string,
+  fieldCandidates: string[],
+  candidateIndex: number
+): boolean {
+  if (fieldCandidates.length <= 1) return false;
+  if (candidateIndex >= fieldCandidates.length - 1) return false;
+
+  const reason = cleanText(failureText).toLowerCase();
+  if (!reason) return false;
+
+  if (reason.includes('path or method not allowed') || reason.includes('method not allowed') || reason.includes('route not found')) {
+    return false;
+  }
+
+  const fieldMismatchHint =
+    reason.includes('field') ||
+    reason.includes('attribute') ||
+    reason.includes('validation') ||
+    reason.includes('relation') ||
+    reason.includes('slides');
+
+  if (!fieldMismatchHint) return false;
+  return status === 400 || status === 422;
+}
+
+function slotFromUploadField(field: string): MediaSlot {
+  if (field === 'Cover') return 'cover';
+  if (field === 'Logo') return 'logo';
+  if (field === 'socialImage') return 'seoSocial';
+  return 'slides';
+}
+
+function getResizeActionForTarget(media: LocalMedia, target: SlotTarget) {
+  if (typeof media.width !== 'number' || typeof media.height !== 'number') {
+    return [] as { resize: { width: number; height: number } }[];
+  }
+
+  const widthScale = target.width / media.width;
+  const heightScale = target.height / media.height;
+  const scale = Math.min(1, widthScale, heightScale);
+
+  if (scale >= 0.999) {
+    return [] as { resize: { width: number; height: number } }[];
+  }
+
+  return [
+    {
+      resize: {
+        width: Math.max(1, Math.round(media.width * scale)),
+        height: Math.max(1, Math.round(media.height * scale)),
+      },
+    },
+  ];
+}
+
+function toRelationMediaId(value: unknown): RelationMediaId | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed) && String(parsed) === trimmed) {
+      return parsed;
+    }
+    return trimmed;
+  }
+
+  return null;
 }
 
 function slugToTitle(value: string): string {
@@ -596,6 +641,7 @@ export default function StoreMediaStudioScreen() {
   const [stockError, setStockError] = useState('');
   const [stockResults, setStockResults] = useState<StockImage[]>([]);
   const [publishingChanges, setPublishingChanges] = useState(false);
+  const [slidesDirty, setSlidesDirty] = useState(false);
   const [fixingSlot, setFixingSlot] = useState(false);
   const [replaceUndoSnapshot, setReplaceUndoSnapshot] = useState<{
     slot: MediaSlot;
@@ -622,8 +668,10 @@ export default function StoreMediaStudioScreen() {
   );
 
   const changedSlotCount = useMemo(
-    () => Object.values(effectiveSlotMedia).reduce((count, items) => count + (items.length ? 1 : 0), 0),
-    [effectiveSlotMedia]
+    () =>
+      Object.values(effectiveSlotMedia).reduce((count, items) => count + (items.length ? 1 : 0), 0) +
+      (slidesDirty && effectiveSlotMedia.slides.length === 0 ? 1 : 0),
+    [effectiveSlotMedia, slidesDirty]
   );
 
   const clearUndoToastTimer = useCallback(() => {
@@ -866,6 +914,7 @@ export default function StoreMediaStudioScreen() {
   const selectedColorSeed = cleanText((selectedMedia as { colorSeed?: string } | undefined)?.colorSeed);
   const hasDraft = Boolean(draftMedia);
   const showDraftPreview = hasDraft && cleanText(draftMedia?.sourceLabel) !== 'composer';
+  const bottomDockVisible = showDraftPreview || changedSlotCount > 0;
   const storeTitleSeed = cleanText(store?.title) || slugToTitle(resolvedStoreSlug) || 'Markket Drop';
   const seoAltSeed = cleanText(remoteSlotMedia.seoSocial[0]?.alt);
   const subtitleSeed = cleanText(store?.SEO?.metaDescription || store?.seo?.metaDescription || '');
@@ -877,9 +926,11 @@ export default function StoreMediaStudioScreen() {
 
   const hasUnsavedChanges = useMemo(() => {
     if (draftMedia) return true;
+    if (slidesDirty) return true;
     return Object.values(localSlotMedia).some((items) => items.length > 0);
-  }, [draftMedia, localSlotMedia]);
+  }, [draftMedia, localSlotMedia, slidesDirty]);
   const activeSlotHasLocalPreview = localSlotMedia[activeSlot].length > 0;
+  const hasLocalOnlyPreview = selectedMediaIsLocal || activeSlotHasLocalPreview;
 
   const selectedQuality = useMemo(() => {
     const policy = SLOT_POLICIES[activeSlot];
@@ -996,12 +1047,6 @@ export default function StoreMediaStudioScreen() {
 
   const applyIncomingDraftToSlot = useCallback(
     (incomingDraft: LocalMedia, slot: MediaSlot, index: number, mode: 'replace' | 'append' = 'replace') => {
-      const policyError = validateMediaAgainstSlotPolicy(slot, incomingDraft);
-      if (policyError) {
-        Alert.alert('Image needs adjustment', policyError);
-        return;
-      }
-
       const slotBaseItems = localSlotMedia[slot].length
         ? [...localSlotMedia[slot]]
         : remoteSlotMedia[slot].map((item) => remoteItemToLocalMedia(item));
@@ -1020,6 +1065,9 @@ export default function StoreMediaStudioScreen() {
         const nextState = { ...prev, [slot]: slotBaseItems };
         return mergeDraftIntoSlotMedia(nextState, incomingDraft, slot, index, mode);
       });
+      if (slot === 'slides') {
+        setSlidesDirty(true);
+      }
       setActiveIndex(nextIndex);
       setDraftMedia(null);
       setReplaceUndoSnapshot({
@@ -1105,6 +1153,9 @@ export default function StoreMediaStudioScreen() {
   const clearLocalReplacement = useCallback(() => {
     const clearState = () => {
       setLocalSlotMedia((prev) => ({ ...prev, [activeSlot]: [] }));
+      if (activeSlot === 'slides') {
+        setSlidesDirty(false);
+      }
       setDraftMedia(null);
       setActiveIndex(0);
     };
@@ -1150,6 +1201,7 @@ export default function StoreMediaStudioScreen() {
         onPress: () => {
           const next = localSlides.filter((_, index) => index !== target);
           setLocalSlotMedia((prev) => ({ ...prev, slides: next }));
+          setSlidesDirty(true);
           setActiveIndex(next.length ? Math.min(target, next.length - 1) : 0);
           requestAnimationFrame(() => scrollToPreview(true));
         },
@@ -1179,6 +1231,7 @@ export default function StoreMediaStudioScreen() {
       const [moved] = next.splice(currentIndex, 1);
       next.splice(targetIndex, 0, moved);
       setLocalSlotMedia((prev) => ({ ...prev, slides: next }));
+      setSlidesDirty(true);
       setActiveIndex(targetIndex);
       requestAnimationFrame(() => scrollToPreview(true));
     },
@@ -1203,6 +1256,7 @@ export default function StoreMediaStudioScreen() {
     setStockError('');
     try {
       const query = stockQuery.trim();
+      const sourceLabel = stockSource.charAt(0).toUpperCase() + stockSource.slice(1);
       const endpoint = query
         ? `/api/markket/img?action=${stockSource}&query=${encodeURIComponent(query)}&per_page=24&count=24`
         : `/api/markket/img?action=${stockSource}&per_page=24&count=24`;
@@ -1210,7 +1264,19 @@ export default function StoreMediaStudioScreen() {
 
       if (!response.ok) {
         setStockResults([]);
-        setStockError(`Could not load stock images (${response.status}).`);
+        if (response.status === 504) {
+          setStockError(`${sourceLabel} is taking longer than usual right now (504). Try again in a few seconds.`);
+          return;
+        }
+        if (response.status === 429) {
+          setStockError(`Too many image requests right now. Give it a few seconds, then try again.`);
+          return;
+        }
+        if (response.status >= 500) {
+          setStockError(`${sourceLabel} is temporarily unavailable. Please try again shortly.`);
+          return;
+        }
+        setStockError(`We couldn't load ${sourceLabel} images right now (${response.status}). Please try again.`);
         return;
       }
 
@@ -1218,11 +1284,12 @@ export default function StoreMediaStudioScreen() {
       const mapped = mapStockResults(payload);
       setStockResults(mapped);
       if (!mapped.length) {
-        setStockError(`No ${stockSource} images found for this search.`);
+        const queryLabel = query || 'that search';
+        setStockError(`No ${sourceLabel} images found for "${queryLabel}". Try simpler words like "minimal", "food", or "fashion".`);
       }
     } catch {
       setStockResults([]);
-      setStockError(`Network error loading ${stockSource} images.`);
+      setStockError(`We couldn't reach ${stockSource} right now. Check connection and try again.`);
     } finally {
       setStockLoading(false);
     }
@@ -1259,41 +1326,12 @@ export default function StoreMediaStudioScreen() {
       }
 
       let uploadUri = uri;
-      let cleanupUri = '';
+      const cleanupUris: string[] = [];
       let fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.jpg`;
       let mimeType = cleanText(media.mime) || 'image/jpeg';
-
-      if (uri.startsWith('data:image/svg+xml')) {
-        const svgMarkup = decodeSvgDataUri(uri);
-        if (!svgMarkup) {
-          throw new Error('Could not prepare this SVG draft for upload.');
-        }
-
-        const svgFile = new FileSystem.File(FileSystem.Paths.cache, `markket-publish-${Date.now()}.svg`);
-        svgFile.write(svgMarkup);
-
-        // Prefer raster upload for maximum backend compatibility.
-        try {
-          const rasterized = await ImageManipulator.manipulateAsync(svgFile.uri, [], {
-            compress: 0.9,
-            format: ImageManipulator.SaveFormat.JPEG,
-          });
-          uploadUri = rasterized.uri;
-          cleanupUri = rasterized.uri;
-          fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.jpg`;
-          mimeType = 'image/jpeg';
-          try {
-            svgFile.delete();
-          } catch {
-            // Ignore temp file cleanup failures.
-          }
-        } catch {
-          uploadUri = svgFile.uri;
-          cleanupUri = svgFile.uri;
-          fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.svg`;
-          mimeType = 'image/svg+xml';
-        }
-      }
+      const slot = slotFromUploadField(target.field);
+      const slotPolicy = SLOT_POLICIES[slot];
+      const slotTarget = SLOT_TARGETS[slot];
 
       if (/^https?:\/\//i.test(uri)) {
         const extensionMatch = uri.match(/\.(jpg|jpeg|png|webp)(\?|$)/i);
@@ -1301,28 +1339,58 @@ export default function StoreMediaStudioScreen() {
         const targetFile = new FileSystem.File(FileSystem.Paths.cache, `markket-publish-${Date.now()}.${ext}`);
         const download = await FileSystem.File.downloadFileAsync(uri, targetFile, { idempotent: true });
         uploadUri = download.uri;
-        cleanupUri = download.uri;
+        cleanupUris.push(download.uri);
         fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.${ext}`;
         mimeType = cleanText(media.mime) || `image/${ext === 'jpg' ? 'jpeg' : ext}`;
       }
 
-      const formData = new FormData();
-      formData.append('files', {
-        uri: uploadUri,
-        name: fileName,
-        type: mimeType,
-      } as unknown as Blob);
-      formData.append('ref', target.ref);
-      formData.append('refId', target.refId);
-      formData.append('field', target.field);
-      formData.append(
-        'fileInfo',
-        JSON.stringify({
-          name: fileName,
-          alternativeText: cleanText(media.altText) || `${uploadFieldLabel(target.field)} image`,
-          caption: cleanText(media.altText) || `${uploadFieldLabel(target.field)} image`,
-        })
-      );
+      const normalizedMime = cleanText(mimeType).toLowerCase();
+      const keepPng = slot === 'logo' && (normalizedMime.includes('png') || /\.png$/i.test(fileName));
+      const isSvg = normalizedMime.includes('svg') || /\.svg$/i.test(fileName);
+      const needsResize =
+        (typeof media.width === 'number' && media.width > slotTarget.width) ||
+        (typeof media.height === 'number' && media.height > slotTarget.height);
+      const needsCompression =
+        typeof media.fileSizeBytes !== 'number' ||
+        media.fileSizeBytes > slotPolicy.maxBytes ||
+        /^https?:\/\//i.test(uri) ||
+        (!keepPng && !normalizedMime.includes('jpeg') && !normalizedMime.includes('jpg'));
+
+      if (!isSvg && (needsResize || needsCompression)) {
+        const resizeAction = getResizeActionForTarget(media, slotTarget);
+        const firstPass = await ImageManipulator.manipulateAsync(uploadUri, resizeAction, {
+          compress: keepPng ? 1 : slotTarget.compress,
+          format: keepPng ? ImageManipulator.SaveFormat.PNG : ImageManipulator.SaveFormat.JPEG,
+        });
+
+        if (firstPass.uri !== uploadUri) {
+          cleanupUris.push(firstPass.uri);
+        }
+
+        uploadUri = firstPass.uri;
+        fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.${keepPng ? 'png' : 'jpg'}`;
+        mimeType = keepPng ? 'image/png' : 'image/jpeg';
+
+        if (!keepPng) {
+          const firstPassInfo = new FileSystem.File(firstPass.uri).info();
+          const firstPassSize = typeof firstPassInfo.size === 'number' ? firstPassInfo.size : undefined;
+
+          if (typeof firstPassSize === 'number' && firstPassSize > slotPolicy.maxBytes) {
+            const secondPass = await ImageManipulator.manipulateAsync(firstPass.uri, [], {
+              compress: Math.max(0.58, slotTarget.compress - 0.14),
+              format: ImageManipulator.SaveFormat.JPEG,
+            });
+
+            if (secondPass.uri !== uploadUri) {
+              cleanupUris.push(secondPass.uri);
+            }
+
+            uploadUri = secondPass.uri;
+            fileName = cleanText(media.fileName) || `markket-media-${Date.now()}.jpg`;
+            mimeType = 'image/jpeg';
+          }
+        }
+      }
 
       const proxyUploadUrl = `${displayBaseUrl}api/markket?path=/api/upload`;
       const headers = {
@@ -1330,33 +1398,65 @@ export default function StoreMediaStudioScreen() {
         'markket-user-id': String(userId),
       };
 
-      try {
-        const proxyResponse = await fetch(proxyUploadUrl, {
-          method: 'POST',
-          headers,
-          body: formData,
-        });
+      const fieldCandidates = uploadFieldVariants(target.field);
 
-        if (proxyResponse.ok) {
-          const payload = (await proxyResponse.json()) as unknown;
-          const payloadRecord = (payload as Record<string, unknown>) || {};
-          const list = Array.isArray(payload)
-            ? payload
-            : Array.isArray(payloadRecord.data)
-              ? (payloadRecord.data as unknown[])
-              : [];
-          const directItem = !Array.isArray(payload) ? (payload as UploadedMediaItem) : undefined;
-          const first = (list[0] as UploadedMediaItem | undefined) || directItem;
-          if (first?.id != null) return first;
-          throw new Error('Proxy upload response did not include a media ID.');
+      try {
+        let lastStatus = 0;
+        let lastFailureText = '';
+
+        for (let index = 0; index < fieldCandidates.length; index += 1) {
+          const fieldName = fieldCandidates[index];
+          const formData = new FormData();
+          formData.append('files', {
+            uri: uploadUri,
+            name: fileName,
+            type: mimeType,
+          } as unknown as Blob);
+          formData.append('ref', target.ref);
+          formData.append('refId', target.refId);
+          formData.append('field', fieldName);
+          formData.append(
+            'fileInfo',
+            JSON.stringify({
+              name: fileName,
+              alternativeText: cleanText(media.altText) || `${uploadFieldLabel(fieldName)} image`,
+              caption: cleanText(media.altText) || `${uploadFieldLabel(fieldName)} image`,
+            })
+          );
+
+          const proxyResponse = await fetch(proxyUploadUrl, {
+            method: 'POST',
+            headers,
+            body: formData,
+          });
+
+          if (proxyResponse.ok) {
+            const payload = (await proxyResponse.json()) as unknown;
+            const payloadRecord = (payload as Record<string, unknown>) || {};
+            const list = Array.isArray(payload)
+              ? payload
+              : Array.isArray(payloadRecord.data)
+                ? (payloadRecord.data as unknown[])
+                : [];
+            const directItem = !Array.isArray(payload) ? (payload as UploadedMediaItem) : undefined;
+            const first = (list[0] as UploadedMediaItem | undefined) || directItem;
+            if (first?.id != null) return first;
+            throw new Error('Proxy upload response did not include a media ID.');
+          }
+
+          lastStatus = proxyResponse.status;
+          lastFailureText = (await proxyResponse.text()).slice(0, 220);
+
+          if (!shouldRetryWithAlternateField(lastStatus, lastFailureText, fieldCandidates, index)) {
+            throw new Error(`Upload failed (${lastStatus}) ${lastFailureText}`.trim());
+          }
         }
 
-        const failureText = (await proxyResponse.text()).slice(0, 220);
-        throw new Error(`Upload failed (${proxyResponse.status}) ${failureText}`.trim());
+        throw new Error(`Upload failed (${lastStatus}) ${lastFailureText}`.trim());
       } finally {
-        if (cleanupUri) {
+        for (const tempUri of Array.from(new Set(cleanupUris)).filter(Boolean)) {
           try {
-            const tempFile = new FileSystem.File(cleanupUri);
+            const tempFile = new FileSystem.File(tempUri);
             tempFile.delete();
           } catch {
             // Ignore temp file cleanup failures.
@@ -1508,7 +1608,7 @@ export default function StoreMediaStudioScreen() {
       }
 
       const slotMediaToPublish = effectiveSlotMedia;
-      const uploadedIds: Partial<Record<MediaSlot, number[]>> = {};
+      const uploadedIds: Partial<Record<MediaSlot, RelationMediaId[]>> = {};
       const coverTarget = getUploadTargetForSlot(store, 'cover');
       const seoSocialTarget = getUploadTargetForSlot(store, 'seoSocial');
       const logoTarget = getUploadTargetForSlot(store, 'logo');
@@ -1516,7 +1616,8 @@ export default function StoreMediaStudioScreen() {
 
       if (slotMediaToPublish.cover.length) {
         const uploaded = await uploadLocalMediaToProxy(slotMediaToPublish.cover[0], session.token, userId, coverTarget);
-        uploadedIds.cover = [Number(uploaded.id)];
+        const coverId = toRelationMediaId(uploaded.documentId ?? uploaded.id);
+        if (coverId != null) uploadedIds.cover = [coverId];
       }
       if (slotMediaToPublish.seoSocial.length) {
         const uploaded = await uploadLocalMediaToProxy(
@@ -1525,63 +1626,87 @@ export default function StoreMediaStudioScreen() {
           userId,
           seoSocialTarget
         );
-        uploadedIds.seoSocial = [Number(uploaded.id)];
+        const seoSocialId = toRelationMediaId(uploaded.documentId ?? uploaded.id);
+        if (seoSocialId != null) uploadedIds.seoSocial = [seoSocialId];
       }
       if (slotMediaToPublish.logo.length) {
         const uploaded = await uploadLocalMediaToProxy(slotMediaToPublish.logo[0], session.token, userId, logoTarget);
-        uploadedIds.logo = [Number(uploaded.id)];
+        const logoId = toRelationMediaId(uploaded.documentId ?? uploaded.id);
+        if (logoId != null) uploadedIds.logo = [logoId];
       }
+      // Build final slides array in exact staged order:
+      // keep remote IDs in-place and upload local drafts in-place.
+      const finalSlideIds: RelationMediaId[] = [];
       if (slotMediaToPublish.slides.length) {
-        const slidesToUpload = slotMediaToPublish.slides.filter(
-          (slide) => cleanText(slide.sourceLabel).toLowerCase() !== 'remote'
-        );
-        const slideIds: number[] = [];
-        for (const slide of slidesToUpload) {
-          const uploaded = await uploadLocalMediaToProxy(slide, session.token, userId, slidesTarget);
-          slideIds.push(Number(uploaded.id));
-        }
-        if (slideIds.length) uploadedIds.slides = slideIds;
-      }
+        const uploadedSlideIds: RelationMediaId[] = [];
 
-      // Build final slides array: kept existing remote slides + newly uploaded slides
-      const finalSlideIds: number[] = [];
-      if (slotMediaToPublish.slides.length > 0) {
-        // Add existing remote slides that are kept
         for (const slide of slotMediaToPublish.slides) {
-          if (cleanText(slide.sourceLabel).toLowerCase() === 'remote' && slide.mediaId) {
-            finalSlideIds.push(Number(slide.mediaId));
+          const isRemote = cleanText(slide.sourceLabel).toLowerCase() === 'remote';
+          if (isRemote) {
+            const id = toRelationMediaId(slide.mediaId);
+            if (id != null) {
+              finalSlideIds.push(id);
+            }
+            continue;
+          }
+
+          const uploaded = await uploadLocalMediaToProxy(slide, session.token, userId, slidesTarget);
+          const uploadedId = toRelationMediaId(uploaded.documentId ?? uploaded.id);
+          if (uploadedId != null) {
+            finalSlideIds.push(uploadedId);
+            uploadedSlideIds.push(uploadedId);
           }
         }
-        // Add newly uploaded slide IDs
-        if (uploadedIds.slides?.length) {
-          finalSlideIds.push(...uploadedIds.slides);
+
+        if (uploadedSlideIds.length) {
+          uploadedIds.slides = uploadedSlideIds;
         }
       }
 
-      // If slides were modified, sync the final list to the store
-      if (slotMediaToPublish.slides.length > 0 && finalSlideIds.length > 0) {
-        try {
-          const storeUpdateUrl = `${displayBaseUrl}api/markket?path=/api/stores/${store.id}`;
-          const storeUpdateHeaders = {
-            Authorization: `Bearer ${session.token}`,
-            'markket-user-id': String(userId),
-            'Content-Type': 'application/json',
-          };
-          const storeUpdatePayload = {
-            data: {
-              Slides: finalSlideIds,
-            },
-          };
-          const updateResponse = await fetch(storeUpdateUrl, {
-            method: 'PUT',
-            headers: storeUpdateHeaders,
-            body: JSON.stringify(storeUpdatePayload),
-          });
-          if (!updateResponse.ok) {
-            console.warn('[MediaStudio] Store slides update returned status', updateResponse.status);
+      // If slides were edited, always sync Slides relation, including empty [] for full delete.
+      if (slidesDirty) {
+        const storeUpdateHeaders = {
+          Authorization: `Bearer ${session.token}`,
+          'markket-user-id': String(userId),
+          'Content-Type': 'application/json',
+        };
+        const storeRefs = [cleanText(store.documentId || ''), String(store.id)].filter(Boolean);
+        const payloads = [
+          { data: { Slides: finalSlideIds } },
+          { data: { slides: finalSlideIds } },
+          { data: { Slides: { set: finalSlideIds } } },
+          { data: { slides: { set: finalSlideIds } } },
+        ];
+
+        let slidesSynced = false;
+        let lastStatus = 0;
+        let lastBody = '';
+
+        for (let attempt = 0; attempt < 2 && !slidesSynced; attempt += 1) {
+          for (const ref of storeRefs) {
+            for (const payload of payloads) {
+              const storeUpdateUrl = `${displayBaseUrl}api/markket?path=/api/stores/${ref}`;
+              const updateResponse = await fetch(storeUpdateUrl, {
+                method: 'PUT',
+                headers: storeUpdateHeaders,
+                body: JSON.stringify(payload),
+              });
+
+              if (updateResponse.ok) {
+                slidesSynced = true;
+                break;
+              }
+
+              lastStatus = updateResponse.status;
+              lastBody = (await updateResponse.text()).slice(0, 220);
+            }
+
+            if (slidesSynced) break;
           }
-        } catch (updateErr) {
-          console.warn('[MediaStudio] Store slides update failed:', updateErr);
+        }
+
+        if (!slidesSynced) {
+          throw new Error(`Slides sync failed (${lastStatus}) ${lastBody}`.trim());
         }
       }
 
@@ -1602,6 +1727,7 @@ export default function StoreMediaStudioScreen() {
         logo: [],
         slides: [],
       });
+      setSlidesDirty(false);
       setDraftMedia(null);
       setShowReplaceToast(false);
       setReplaceUndoSnapshot(null);
@@ -1618,6 +1744,7 @@ export default function StoreMediaStudioScreen() {
     changedSlotCount,
     displayBaseUrl,
     effectiveSlotMedia,
+    slidesDirty,
     loadStoreMedia,
     resolveUserId,
     session?.token,
@@ -1762,7 +1889,16 @@ export default function StoreMediaStudioScreen() {
     <ThemedView style={styles.flex}>
       <ScrollView
         ref={scrollViewRef}
-        contentContainerStyle={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + (showDraftPreview ? 132 : 28) }]}
+        contentContainerStyle={[
+          styles.container,
+          {
+            paddingTop: insets.top + 16,
+            paddingBottom: insets.bottom + (bottomDockVisible ? 168 : 40),
+          },
+        ]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        onScrollBeginDrag={Keyboard.dismiss}
         showsVerticalScrollIndicator={false}>
         <View style={styles.headerRow}>
           <View style={styles.headingWrap}>
@@ -1823,6 +1959,11 @@ export default function StoreMediaStudioScreen() {
           ) : selectedMediaUrl ? (
             <Pressable style={styles.previewWrap} onPress={() => setFullPreviewVisible(true)}>
               <Image source={{ uri: selectedMediaUrl }} style={styles.previewImage} contentFit="cover" transition={180} />
+                  {hasLocalOnlyPreview ? (
+                    <View style={styles.previewStagedPill}>
+                      <ThemedText style={styles.previewStagedPillText}>Local preview only</ThemedText>
+                    </View>
+                  ) : null}
                   {selectedMediaIsLocal ? (
                     <Pressable style={styles.previewDiscardFab} onPress={clearLocalReplacement}>
                       <ThemedText style={styles.previewDiscardFabText}>x</ThemedText>
@@ -1847,6 +1988,10 @@ export default function StoreMediaStudioScreen() {
             </View>
           )}
         </Animated.View>
+
+        {changedSlotCount > 0 ? (
+          <ThemedText style={styles.previewPublishReminder}>Preview changes are local until you tap Publish Changes.</ThemedText>
+        ) : null}
 
         {activeItems.length > 1 ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbRow}>
@@ -2054,8 +2199,16 @@ export default function StoreMediaStudioScreen() {
               }
             }}
           />
-          <Button label={stockLoading ? 'Searching...' : `Search ${stockSource}`} variant="secondary" onPress={() => void searchStockImages()} disabled={stockLoading} />
+          <View style={styles.actionRow}>
+            <Button label={stockLoading ? 'Searching...' : `Search ${stockSource}`} variant="secondary" onPress={() => void searchStockImages()} disabled={stockLoading} />
+            <Pressable style={styles.actionPill} onPress={Keyboard.dismiss}>
+              <ThemedText style={styles.actionPillText}>Hide Keyboard</ThemedText>
+            </Pressable>
+          </View>
           {stockError ? <ThemedText style={styles.errorText}>{stockError}</ThemedText> : null}
+          {!stockLoading && !stockError && !stockResults.length ? (
+            <ThemedText style={styles.infoLine}>Search to pull fresh images. Tip: 1-2 words usually works best.</ThemedText>
+          ) : null}
 
           {stockResults.length ? (
             <View style={styles.stockGrid}>
@@ -2295,6 +2448,30 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15,23,42,0.55)',
     paddingHorizontal: 10,
     paddingVertical: 4,
+  },
+  previewStagedPill: {
+    position: 'absolute',
+    left: 10,
+    top: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(180,83,9,0.45)',
+    backgroundColor: 'rgba(120,53,15,0.82)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  previewStagedPillText: {
+    color: '#FFEDD5',
+    fontSize: 11,
+    fontWeight: '800',
+    fontFamily: 'SpaceGrotesk',
+  },
+  previewPublishReminder: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#9A3412',
+    fontFamily: 'Manrope',
+    marginTop: 8,
   },
   previewDiscardFab: {
     position: 'absolute',

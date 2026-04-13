@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -78,6 +78,8 @@ type StoreMedia = {
   };
 };
 
+type ProfileSection = 'profile' | 'stores' | 'orders' | 'sales';
+
 const WHATSAPP_MAGIC_NUMBER = '15186291830';
 const WHATSAPP_MAGIC_LABEL = '+1 (518) 629 1830';
 const WHATSAPP_MAGIC_TEXT = 'magic';
@@ -149,6 +151,7 @@ function isExpiredByCreatedAt(value: string, ttlMs: number): boolean {
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const { section } = useLocalSearchParams<{ section?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const { apiBaseUrl, displayBaseUrl, defaultStoreSlug } = useAppConfig();
   const { ready, session, clearSession, saveToken } = useAuthSession();
@@ -168,6 +171,14 @@ export default function ProfileScreen() {
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [loadingStores, setLoadingStores] = useState(false);
   const [authExpired, setAuthExpired] = useState(false);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const [sectionAnchors, setSectionAnchors] = useState<Partial<Record<ProfileSection, number>>>({});
+
+  const requestedSection = useMemo<ProfileSection>(() => {
+    const rawSection = cleanText(Array.isArray(section) ? section[0] : section).toLowerCase();
+    if (rawSection === 'stores' || rawSection === 'orders' || rawSection === 'sales') return rawSection;
+    return 'profile';
+  }, [section]);
 
 
   const requestMagicUrl = `${displayBaseUrl}api/markket?path=/api/auth-magic/request`;
@@ -204,6 +215,28 @@ export default function ProfileScreen() {
     return grouped;
   }, [recentOrders]);
   const canCreateStore = stores.length < 2;
+
+  const setSectionAnchor = useCallback((key: ProfileSection, y: number) => {
+    setSectionAnchors((prev) => {
+      if (prev[key] === y) return prev;
+      return { ...prev, [key]: y };
+    });
+  }, []);
+
+  const scrollToSection = useCallback((key: ProfileSection, animated = true) => {
+    const y = sectionAnchors[key];
+    if (typeof y !== 'number') return;
+    const target = Math.max(y - 14, 0);
+    scrollViewRef.current?.scrollTo({ y: target, animated });
+  }, [sectionAnchors]);
+
+  useEffect(() => {
+    const anchor = sectionAnchors[requestedSection];
+    if (typeof anchor !== 'number') return;
+    requestAnimationFrame(() => {
+      scrollToSection(requestedSection, false);
+    });
+  }, [requestedSection, scrollToSection, sectionAnchors]);
 
   useEffect(() => {
     let cancelled = false;
@@ -369,8 +402,10 @@ export default function ProfileScreen() {
       return;
     }
 
-    const storeEditorUrl = `${displayBaseUrl}tienda/${storeSlug}/store?display=embed`;
-    router.push({ pathname: '/web', params: { url: storeEditorUrl, captureAuth: '0', closeOnExit: '1' } } as never);
+    router.push({
+      pathname: '/store/[storeSlug]/settings',
+      params: { storeSlug },
+    } as never);
   };
 
   const openCreateStore = useCallback(() => {
@@ -799,11 +834,33 @@ export default function ProfileScreen() {
   return (
     <ThemedView style={styles.flex}>
       <ScrollView
+        ref={scrollViewRef}
         contentContainerStyle={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 132 }]}
         showsVerticalScrollIndicator={false}>
         <ThemedText type="title" style={styles.title}>
           Account
         </ThemedText>
+
+        {session?.token ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sectionTabsRow}>
+            {([
+              { key: 'profile' as const, label: 'Profile' },
+              { key: 'stores' as const, label: 'Stores' },
+              { key: 'orders' as const, label: 'Orders' },
+              { key: 'sales' as const, label: 'Sales' },
+            ] as const).map((item) => {
+              const active = requestedSection === item.key;
+              return (
+                <Pressable
+                  key={item.key}
+                  style={[styles.sectionTab, active && styles.sectionTabActive]}
+                  onPress={() => scrollToSection(item.key)}>
+                  <ThemedText style={[styles.sectionTabText, active && styles.sectionTabTextActive]}>{item.label}</ThemedText>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
 
         {authExpired ? (
           <View style={styles.card}>
@@ -855,7 +912,7 @@ export default function ProfileScreen() {
         </View>
 
         {session?.token ? (
-          <View style={styles.card}>
+          <View style={styles.card} onLayout={(event) => setSectionAnchor('profile', event.nativeEvent.layout.y)}>
             <View style={styles.cardHeaderRow}>
               <ThemedText type="defaultSemiBold">Profile</ThemedText>
               <Pressable style={styles.editPill} onPress={() => setIsEditingProfile((prev) => !prev)}>
@@ -911,7 +968,7 @@ export default function ProfileScreen() {
         ) : null}
 
         {session?.token ? (
-          <View style={styles.card}>
+          <View style={styles.card} onLayout={(event) => setSectionAnchor('stores', event.nativeEvent.layout.y)}>
             <ThemedText type="defaultSemiBold">Your Stores</ThemedText>
             <ThemedText style={styles.infoLine}>
               Your active stores.
@@ -926,7 +983,9 @@ export default function ProfileScreen() {
               <View style={styles.profileSummaryWrap}>
                 {stores.slice(0, 3).map((store) => (
                   <View key={store.id} style={[styles.summaryChip, styles.storeChip]}>
-                    <View style={styles.storeChipRow}>
+                    <Pressable
+                      style={({ pressed }) => [styles.storeChipRow, pressed && styles.storeChipRowPressed]}
+                      onPress={() => openStorePreview(store.slug)}>
                       {getStorePreviewImage(store, apiBaseUrl) ? (
                         <Image
                           source={{ uri: getStorePreviewImage(store, apiBaseUrl) }}
@@ -954,14 +1013,9 @@ export default function ProfileScreen() {
                           </ThemedText>
                         ) : null}
                       </View>
-                    </View>
+                    </Pressable>
 
                     <View style={styles.storeActionsRow}>
-                      <Pressable
-                        style={({ pressed }) => [styles.storeActionPill, pressed && styles.storeChipPressed]}
-                        onPress={() => openStorePreview(store.slug)}>
-                        <ThemedText style={styles.storeActionText}>Preview</ThemedText>
-                      </Pressable>
                       <Pressable
                         style={({ pressed }) => [styles.storeActionPill, pressed && styles.storeChipPressed]}
                         onPress={() => openStoreEditor(store.slug)}>
@@ -992,13 +1046,10 @@ export default function ProfileScreen() {
             ) : (
                   <ThemedText style={styles.infoLine}>No stores yet. Create one and it will show up here.</ThemedText>
             )}
-            {!loadingStores && !canCreateStore ? (
-              <ThemedText style={styles.infoLine}>You have reached the store limit for this account. Reach out if you need more.</ThemedText>
-            ) : null}
           </View>
         ) : null}
 
-        <View style={styles.card}>
+        <View style={styles.card} onLayout={(event) => setSectionAnchor('orders', event.nativeEvent.layout.y)}>
           <ThemedText type="defaultSemiBold">Purchase History</ThemedText>
           <ThemedText style={styles.infoLine}>
             Your recent purchases, saved on this device for 7 days.
@@ -1032,7 +1083,7 @@ export default function ProfileScreen() {
         </View>
 
         {session?.token ? (
-          <View style={styles.card}>
+          <View style={styles.card} onLayout={(event) => setSectionAnchor('sales', event.nativeEvent.layout.y)}>
             <ThemedText type="defaultSemiBold">Sales Activity</ThemedText>
             <ThemedText style={styles.infoLine}>
               Orders placed through your stores on this device.
@@ -1107,6 +1158,31 @@ const styles = StyleSheet.create({
   subtitle: {
     opacity: 0.7,
     marginTop: 4,
+  },
+  sectionTabsRow: {
+    paddingVertical: 4,
+    gap: 8,
+  },
+  sectionTab: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.3)',
+    backgroundColor: 'rgba(240,249,255,0.92)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  sectionTabActive: {
+    backgroundColor: '#0E7490',
+    borderColor: '#0E7490',
+  },
+  sectionTabText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0E7490',
+    letterSpacing: 0.25,
+  },
+  sectionTabTextActive: {
+    color: '#FFFFFF',
   },
   heroCard: {
     marginTop: 8,
@@ -1258,6 +1334,9 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  storeChipRowPressed: {
+    opacity: 0.75,
+  },
   storeMetaLine: {
     fontSize: 12,
     lineHeight: 17,
@@ -1269,7 +1348,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    flexWrap: 'wrap',
   },
   storeActionPill: {
     borderRadius: 999,

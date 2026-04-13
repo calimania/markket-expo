@@ -1,4 +1,5 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
@@ -802,7 +803,7 @@ export default function StoreScreen() {
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [userOwnedStores, setUserOwnedStores] = useState<Set<string>>(new Set());
-  const [checkingOwnership, setCheckingOwnership] = useState(false);
+  const [, setCheckingOwnership] = useState(false);
 
   const openExternalUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {
@@ -1067,7 +1068,7 @@ export default function StoreScreen() {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, cleanSlug, fetchJson, fetchStoreArticles, fetchStoreInfo, fetchStorePages, ready]);
+  }, [apiBaseUrl, checkStoreOwnership, cleanSlug, fetchJson, fetchStoreArticles, fetchStoreInfo, fetchStorePages, ready]);
 
   useEffect(() => {
     load();
@@ -1341,17 +1342,31 @@ export default function StoreScreen() {
                   style={styles.secondaryHeroButton}
                   onPress={() => router.push({ pathname: `/store/${cleanSlug}/media` } as never)}
                 >
+                  <MaterialIcons name="photo-library" size={15} color="#0E7490" />
                   <ThemedText style={styles.secondaryHeroButtonText}>Edit Media</ThemedText>
                 </Pressable>
                 <Pressable
                   style={styles.secondaryHeroButton}
-                  onPress={() => router.push({ pathname: '/profile' } as never)}
+                  onPress={() =>
+                    router.push(
+                      {
+                        pathname: '/web',
+                        params: {
+                          url: `${displayBaseUrl}tienda/${cleanSlug}/store?display=embed`,
+                          captureAuth: '0',
+                          closeOnExit: '1',
+                        },
+                      } as never
+                    )
+                  }
                 >
+                  <MaterialIcons name="dashboard" size={15} color="#0E7490" />
                   <ThemedText style={styles.secondaryHeroButtonText}>Dashboard</ThemedText>
                 </Pressable>
               </>
             )}
             <Pressable style={styles.secondaryHeroButton} onPress={shareStore}>
+              <MaterialIcons name="ios-share" size={15} color="#0E7490" />
               <ThemedText style={styles.secondaryHeroButtonText}>Share Store</ThemedText>
             </Pressable>
             <ThemedText style={styles.heroUrlHint}>{storefrontUrl.replace('https://', '')}</ThemedText>
@@ -1824,26 +1839,33 @@ const styles = StyleSheet.create({
   },
   heroActions: {
     marginTop: 6,
-    gap: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
   },
   secondaryHeroButton: {
     alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: 'rgba(8,145,178,0.4)',
     backgroundColor: 'rgba(255,255,255,0.92)',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
   secondaryHeroButtonText: {
     color: '#0E7490',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
   heroUrlHint: {
     fontSize: 11,
     opacity: 0.62,
+    marginLeft: 2,
   },
   loadingStage: {
     borderRadius: 16,
