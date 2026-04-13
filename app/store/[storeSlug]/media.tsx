@@ -1663,6 +1663,13 @@ export default function StoreMediaStudioScreen() {
         }
       }
 
+      const remoteSlideIds = remoteSlotMedia.slides
+        .map((slide) => toRelationMediaId(slide.mediaId))
+        .filter((id): id is RelationMediaId => id != null);
+      const appendOnlySlidesChange =
+        finalSlideIds.length >= remoteSlideIds.length &&
+        remoteSlideIds.every((id, index) => finalSlideIds[index] === id);
+
       // If slides were edited, always sync Slides relation, including empty [] for full delete.
       if (slidesDirty) {
         const storeUpdateHeaders = {
@@ -1672,6 +1679,7 @@ export default function StoreMediaStudioScreen() {
         };
         const storeRefs = [cleanText(store.documentId || ''), String(store.id)].filter(Boolean);
         const payloads = [
+          // slidesToSync may be [] when the user deleted all slides — that's intentional.
           { data: { Slides: finalSlideIds } },
           { data: { slides: finalSlideIds } },
           { data: { Slides: { set: finalSlideIds } } },
@@ -1686,6 +1694,7 @@ export default function StoreMediaStudioScreen() {
           for (const ref of storeRefs) {
             for (const payload of payloads) {
               const storeUpdateUrl = `${displayBaseUrl}api/markket?path=/api/stores/${ref}`;
+              console.info('[MediaStudio] slides sync attempt', { attempt, ref, payloadKeys: Object.keys(payload), storeUpdateUrl });
               const updateResponse = await fetch(storeUpdateUrl, {
                 method: 'PUT',
                 headers: storeUpdateHeaders,
@@ -1694,11 +1703,13 @@ export default function StoreMediaStudioScreen() {
 
               if (updateResponse.ok) {
                 slidesSynced = true;
+                console.info('[MediaStudio] slides sync OK', { ref, payloadKeys: Object.keys(payload) });
                 break;
               }
 
               lastStatus = updateResponse.status;
               lastBody = (await updateResponse.text()).slice(0, 220);
+              console.warn('[MediaStudio] slides sync attempt failed', { ref, status: lastStatus, body: lastBody, payloadKeys: Object.keys(payload) });
             }
 
             if (slidesSynced) break;
@@ -1706,7 +1717,12 @@ export default function StoreMediaStudioScreen() {
         }
 
         if (!slidesSynced) {
-          throw new Error(`Slides sync failed (${lastStatus}) ${lastBody}`.trim());
+          if (!appendOnlySlidesChange) {
+            throw new Error(`Slides update failed (${lastStatus || 'unknown'}): ${lastBody || 'Could not sync slide relation.'}`);
+          }
+
+          // Append-only failures are noisy but non-destructive because uploads already exist server-side.
+          console.warn('[MediaStudio] slides relation sync non-critical failure', { lastStatus, lastBody, finalSlideIds });
         }
       }
 
@@ -1744,6 +1760,7 @@ export default function StoreMediaStudioScreen() {
     changedSlotCount,
     displayBaseUrl,
     effectiveSlotMedia,
+    remoteSlotMedia.slides,
     slidesDirty,
     loadStoreMedia,
     resolveUserId,
@@ -1844,7 +1861,7 @@ export default function StoreMediaStudioScreen() {
         const slotForDraft = resolvedDraftSlot || activeSlot;
         const slotTargetIndex = slotForDraft === activeSlot ? activeIndex : 0;
 
-        applyIncomingDraftToSlot(incomingDraft, slotForDraft, slotTargetIndex);
+        applyIncomingDraftToSlot(incomingDraft, slotForDraft, slotTargetIndex, slotForDraft === 'slides' ? 'append' : 'replace');
         requestAnimationFrame(() => scrollToPreview(true));
 
         await AsyncStorage.removeItem(resolvedDraftKey);

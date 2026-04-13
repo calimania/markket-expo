@@ -1,7 +1,8 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { RichEditor, RichToolbar, actions } from 'react-native-pell-rich-editor';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -10,6 +11,12 @@ import { Input } from '@/components/ui/input';
 import { useAppConfig } from '@/hooks/use-app-config';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { apiGet } from '@/lib/api';
+import {
+  buildStrapiRichTextPayloads,
+  extractPlainText,
+  normalizeHtmlForCompare,
+  richValueToHtml,
+} from '@/lib/rich-text';
 
 type StoreMedia = {
   url?: string;
@@ -28,8 +35,16 @@ type StoreItem = {
   documentId?: string;
   title?: string;
   slug?: string;
-  description?: string;
-  Description?: string;
+  description?: unknown;
+  Description?: unknown;
+  Cover?: unknown;
+  cover?: unknown;
+  Logo?: unknown;
+  logo?: unknown;
+  Slides?: unknown;
+  slides?: unknown;
+  active?: unknown;
+  Active?: unknown;
   SEO?: StoreSEO | null;
   seo?: StoreSEO | null;
 };
@@ -72,12 +87,25 @@ function slugify(value: string): string {
     .replace(/^-|-$/g, '');
 }
 
+function slugToTitle(slug: string): string {
+  return cleanText(slug)
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function pickSeo(store: StoreItem | null): StoreSEO | null {
   return store?.SEO || store?.seo || null;
 }
 
 function getStoreDescription(store: StoreItem | null): string {
-  return cleanText(store?.description) || cleanText(store?.Description);
+  return extractPlainText(store?.description) || extractPlainText(store?.Description);
+}
+
+function getStoreDescriptionHtml(store: StoreItem | null): string {
+  if (!store) return '<p></p>';
+  const first = richValueToHtml(store.description);
+  if (first !== '<p></p>') return first;
+  return richValueToHtml(store.Description);
 }
 
 export default function StoreSettingsScreen() {
@@ -95,10 +123,11 @@ export default function StoreSettingsScreen() {
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
-  const [description, setDescription] = useState('');
+  const [descriptionHtml, setDescriptionHtml] = useState('<p></p>');
   const [seoTitle, setSeoTitle] = useState('');
   const [seoDescription, setSeoDescription] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
+  const descriptionEditorRef = useRef<RichEditor | null>(null);
 
   const resolveUserId = useCallback(async (): Promise<string> => {
     const existing =
@@ -192,17 +221,54 @@ export default function StoreSettingsScreen() {
       }
 
       const selected = allStores.find((item) => cleanText(item.slug) === resolvedStoreSlug) || null;
-      setStore(selected);
+
       if (!selected) {
+        setStore(null);
         setLoadError('Store not found in your account list.');
+        return;
       }
+
+      // Enrich with public Strapi endpoint to get full rich text content (description, SEO).
+      // The owner proxy list endpoint may return a leaner shape that strips rich block fields.
+      try {
+        const publicUrl =
+          `${apiBaseUrl}/api/stores?filters[slug][$eq]=${encodeURIComponent(resolvedStoreSlug)}` +
+          `&populate[SEO][populate]=socialImage&populate[Logo]=true&populate[Cover]=true&populate[Slides]=true`;
+        const publicResponse = await fetch(publicUrl);
+        if (publicResponse.ok) {
+          type PublicStorePayload = { data?: StoreItem[] };
+          const publicPayload = (await publicResponse.json()) as PublicStorePayload;
+          const publicStore = Array.isArray(publicPayload?.data) ? publicPayload.data[0] : null;
+          if (publicStore) {
+            setStore({
+              ...selected,
+              description: publicStore.description ?? publicStore.Description ?? selected.description,
+              Description: publicStore.Description ?? publicStore.description ?? selected.Description,
+              SEO: publicStore.SEO ?? publicStore.seo ?? selected.SEO ?? selected.seo,
+              seo: publicStore.seo ?? publicStore.SEO ?? selected.seo ?? selected.SEO,
+              Cover: publicStore.Cover ?? publicStore.cover ?? selected.Cover,
+              cover: publicStore.cover ?? publicStore.Cover ?? selected.cover,
+              Logo: publicStore.Logo ?? publicStore.logo ?? selected.Logo,
+              logo: publicStore.logo ?? publicStore.Logo ?? selected.logo,
+              Slides: publicStore.Slides ?? publicStore.slides ?? selected.Slides,
+              slides: publicStore.slides ?? publicStore.Slides ?? selected.slides,
+            });
+            return;
+          }
+        }
+      } catch {
+        // Public enrichment failed — fall back to proxy data, which may lack rich content.
+        console.warn('[StoreSettings] Public enrich failed, using proxy store data');
+      }
+
+      setStore(selected);
     } catch {
       setStore(null);
       setLoadError('Network error loading store settings.');
     } finally {
       setLoading(false);
     }
-  }, [displayBaseUrl, resolveUserId, resolvedStoreSlug, session?.token]);
+  }, [apiBaseUrl, displayBaseUrl, resolveUserId, resolvedStoreSlug, session?.token]);
 
   useEffect(() => {
     if (!ready || !session?.token || !resolvedStoreSlug) return;
@@ -215,10 +281,12 @@ export default function StoreSettingsScreen() {
     const seo = pickSeo(store);
     const nextTitle = cleanText(store.title);
     const nextSlug = cleanText(store.slug);
+    const nextDescriptionHtml = getStoreDescriptionHtml(store);
 
     setTitle(nextTitle);
     setSlug(nextSlug);
-    setDescription(getStoreDescription(store));
+    setDescriptionHtml(nextDescriptionHtml);
+    descriptionEditorRef.current?.setContentHTML(nextDescriptionHtml);
     setSeoTitle(cleanText(seo?.metaTitle));
     setSeoDescription(cleanText(seo?.metaDescription));
     setSlugTouched(false);
@@ -234,21 +302,54 @@ export default function StoreSettingsScreen() {
 
   const normalizedTitle = cleanText(title);
   const normalizedSlug = slugify(slug);
-  const normalizedDescription = cleanText(description);
+  const normalizedDescription = extractPlainText(descriptionHtml);
   const normalizedSeoTitle = cleanText(seoTitle);
   const normalizedSeoDescription = cleanText(seoDescription);
+  const normalizedDescriptionHtml = normalizeHtmlForCompare(descriptionHtml);
+  const preservedStoreFields = useMemo(() => {
+    if (!store) return {};
+
+    const preserved: Record<string, unknown> = {};
+    const put = (key: string, value: unknown) => {
+      if (value !== undefined) preserved[key] = value;
+    };
+
+    put('Cover', store.Cover ?? store.cover);
+    put('cover', store.cover ?? store.Cover);
+    put('Logo', store.Logo ?? store.logo);
+    put('logo', store.logo ?? store.Logo);
+    put('Slides', store.Slides ?? store.slides);
+    put('slides', store.slides ?? store.Slides);
+
+    const active = store.active ?? store.Active;
+    put('active', active);
+    put('Active', active);
+
+    const seoSource = store.SEO || store.seo;
+    const socialImage =
+      seoSource && typeof seoSource === 'object' ? (seoSource as { socialImage?: unknown }).socialImage : undefined;
+    if (socialImage !== undefined) {
+      preserved.SEO = { socialImage };
+      preserved.seo = { socialImage };
+    }
+
+    return preserved;
+  }, [store]);
 
   const hasUnsavedChanges = useMemo(() => {
     if (!store) return false;
     const seo = pickSeo(store);
+    const originalDescriptionHtml = normalizeHtmlForCompare(getStoreDescriptionHtml(store));
     return (
       normalizedTitle !== cleanText(store.title) ||
       normalizedSlug !== cleanText(store.slug) ||
+      normalizedDescriptionHtml !== originalDescriptionHtml ||
       normalizedDescription !== getStoreDescription(store) ||
       normalizedSeoTitle !== cleanText(seo?.metaTitle) ||
       normalizedSeoDescription !== cleanText(seo?.metaDescription)
     );
   }, [
+    normalizedDescriptionHtml,
     normalizedDescription,
     normalizedSeoDescription,
     normalizedSeoTitle,
@@ -296,49 +397,14 @@ export default function StoreSettingsScreen() {
         'Content-Type': 'application/json',
       };
 
-      const payloads = [
-        {
-          store: {
-            title: normalizedTitle,
-            Title: normalizedTitle,
-            slug: normalizedSlug,
-            description: normalizedDescription || null,
-            Description: normalizedDescription || null,
-            SEO: {
-              metaTitle: normalizedSeoTitle || null,
-              metaDescription: normalizedSeoDescription || null,
-            },
-          },
-        },
-        {
-          data: {
-            Title: normalizedTitle,
-            title: normalizedTitle,
-            slug: normalizedSlug,
-            description: normalizedDescription || null,
-            Description: normalizedDescription || null,
-            SEO: {
-              metaTitle: normalizedSeoTitle || null,
-              metaDescription: normalizedSeoDescription || null,
-            },
-          },
-        },
-        {
-          body: {
-            store: {
-              title: normalizedTitle,
-              Title: normalizedTitle,
-              slug: normalizedSlug,
-              description: normalizedDescription || null,
-              Description: normalizedDescription || null,
-              SEO: {
-                metaTitle: normalizedSeoTitle || null,
-                metaDescription: normalizedSeoDescription || null,
-              },
-            },
-          },
-        },
-      ];
+      const payloads = buildStrapiRichTextPayloads({
+        title: normalizedTitle,
+        slug: normalizedSlug,
+        descriptionHtml,
+        seoTitle: normalizedSeoTitle,
+        seoDescription: normalizedSeoDescription,
+        preserveStore: preservedStoreFields,
+      });
 
       let lastStatus = 0;
       let lastText = '';
@@ -372,6 +438,7 @@ export default function StoreSettingsScreen() {
       setSaving(false);
     }
   }, [
+    descriptionHtml,
     displayBaseUrl,
     loadStore,
     normalizedDescription,
@@ -379,6 +446,7 @@ export default function StoreSettingsScreen() {
     normalizedSeoTitle,
     normalizedSlug,
     normalizedTitle,
+    preservedStoreFields,
     resolveUserId,
     session?.token,
     store,
@@ -392,8 +460,11 @@ export default function StoreSettingsScreen() {
     );
   }
 
+  const navTitle = cleanText(store?.title) || slugToTitle(resolvedStoreSlug) || 'Store Settings';
+
   return (
     <ThemedView style={styles.flex}>
+      <Stack.Screen options={{ title: navTitle }} />
       <ScrollView
         contentContainerStyle={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 34 }]}
         keyboardShouldPersistTaps="handled"
@@ -444,14 +515,37 @@ export default function StoreSettingsScreen() {
             <View style={styles.card}>
               <ThemedText type="defaultSemiBold">Store Copy</ThemedText>
               <ThemedText style={styles.fieldLabel}>Description</ThemedText>
-              <TextInput
-                value={description}
-                onChangeText={setDescription}
-                placeholder="Short description"
-                placeholderTextColor="rgba(100,116,139,0.72)"
-                multiline
-                style={styles.multiInput}
-              />
+                  <View style={styles.richEditorCard}>
+                    <RichToolbar
+                      editor={descriptionEditorRef}
+                      actions={[
+                        actions.setBold,
+                        actions.setItalic,
+                        actions.setUnderline,
+                        actions.insertBulletsList,
+                        actions.insertOrderedList,
+                        actions.undo,
+                        actions.redo,
+                      ]}
+                      iconTint="#0E7490"
+                      selectedIconTint="#0F172A"
+                      selectedButtonStyle={styles.richToolbarSelected}
+                      style={styles.richToolbar}
+                    />
+                    <RichEditor
+                      ref={descriptionEditorRef}
+                      initialContentHTML={descriptionHtml}
+                      placeholder="Write your store description"
+                      onChange={setDescriptionHtml}
+                      editorStyle={{
+                        backgroundColor: '#FFFFFF',
+                        color: '#0F172A',
+                        placeholderColor: '#64748B',
+                        contentCSSText: 'font-size:15px; line-height:1.5; padding: 8px 6px; min-height: 140px;',
+                      }}
+                      style={styles.richEditor}
+                    />
+                  </View>
             </View>
 
             <View style={styles.card}>
@@ -563,6 +657,26 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     fontSize: 15,
     lineHeight: 21,
+  },
+  richEditorCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(14,116,144,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    overflow: 'hidden',
+    height: 220,
+  },
+  richEditor: {
+    flex: 1,
+  },
+  richToolbar: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(14,116,144,0.18)',
+    backgroundColor: 'rgba(240,249,255,0.95)',
+  },
+  richToolbarSelected: {
+    backgroundColor: 'rgba(186,230,253,0.9)',
+    borderRadius: 6,
   },
   actionRow: {
     gap: 10,
